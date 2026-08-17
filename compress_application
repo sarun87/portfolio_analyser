@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_NAME="$(basename "$ROOT_DIR")"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+ARCHIVE_DIR="$ROOT_DIR/archives"
+MODE="${1:-portable}"
+
+mkdir -p "$ARCHIVE_DIR"
+
+if [[ "$MODE" != "portable" && "$MODE" != "--portable" && "$MODE" != "full" && "$MODE" != "--full" ]]; then
+  echo "Usage: ./compress_application [--portable|--full]"
+  echo "  --portable  Archive source, scripts, built app files, and data; exclude machine-specific dependencies. Default."
+  echo "  --full      Archive everything except generated archives."
+  exit 1
+fi
+
+if [[ "$MODE" == "--full" || "$MODE" == "full" ]]; then
+  ARCHIVE_PATH="$ARCHIVE_DIR/${APP_NAME}_full_${TIMESTAMP}.tar.gz"
+  echo "Creating full archive at:"
+  echo "  $ARCHIVE_PATH"
+  tar \
+    --exclude="./archives" \
+    -czf "$ARCHIVE_PATH" \
+    -C "$ROOT_DIR/.." \
+    "$APP_NAME"
+else
+  ARCHIVE_PATH="$ARCHIVE_DIR/${APP_NAME}_portable_${TIMESTAMP}.tar.gz"
+  echo "Creating portable archive at:"
+  echo "  $ARCHIVE_PATH"
+  tar \
+    --exclude="./archives" \
+    --exclude="./.git" \
+    --exclude="./.venv" \
+    --exclude="./frontend/node_modules" \
+    --exclude="./.pytest_cache" \
+    --exclude="./__pycache__" \
+    --exclude="*/__pycache__" \
+    --exclude="*.pyc" \
+    --exclude=".DS_Store" \
+    -czf "$ARCHIVE_PATH" \
+    -C "$ROOT_DIR/.." \
+    "$APP_NAME"
+fi
+
+echo "Archive created."
+echo "Copy it to the target device, extract it, then run:"
+echo "  ./init_portfolio_analyser"
+echo "  ./run_portfolio_analyser"

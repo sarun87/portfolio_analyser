@@ -1,0 +1,123 @@
+ # Product Roadmap: From Portfolio Tracker to Decision Coach
+
+  ## Summary
+
+  Position the app as a local-first portfolio decision coach. Its advantage over spreadsheets should be continuously evaluating the portfolio, explaining what matters, modeling alternatives, and tracking decisions over
+  time.
+
+  The app remains useful with holdings snapshots alone. Optional household data improves planning. It will never connect to brokerage accounts or automatically retrieve statements.
+
+  ## Priority 1 — Decision Coach
+
+  1. Portfolio Review Inbox
+      - Rank findings by severity and financial impact.
+      - Detect concentration, allocation drift, cash drag, stale prices, missing classifications, currency risk, and inadequate liquidity.
+      - Show evidence, importance, confidence, and suggested next steps.
+
+  2. “What Changed?” Snapshot Analysis
+      - Compare the latest upload with the previous snapshot.
+      - Highlight new and exited holdings, position changes, allocation shifts, cash movements, and unusual valuation changes.
+      - Clearly label inferred activity that cannot be distinguished from deposits, withdrawals, or trades.
+
+  3. Scenario Lab
+      - Model contributions, withdrawals, reallocations, sales, and cash-reserve changes without modifying stored positions.
+      - Compare current and proposed concentration, drift, liquidity, taxes, and goal probability.
+      - Save named scenarios for later comparison.
+
+  4. Portfolio Stress Testing
+      - Model market crashes, interest-rate shocks, currency moves, sector declines, and security-level shocks.
+      - Show projected loss, largest contributors, cash runway, and affected goals.
+      - Provide historical-style scenarios using cached public data when available.
+
+  5. Smarter Rebalancing Guidance
+      - Prioritize important allocation gaps and estimate their amounts.
+      - Prefer contributions and available cash before suggesting sales.
+      - Surface tax and holding-period considerations without prescribing exact trades.
+
+  6. Look-Through Exposure and Overlap
+      - Identify duplicate exposure across funds and directly held securities.
+      - Report effective company, sector, geography, currency, and asset-class concentration.
+      - Show metadata freshness and support manually supplied fund holdings.
+
+  7. Risk Decomposition
+      - Estimate volatility, drawdown, correlation, beta, and holding-level risk contributions.
+      - Distinguish large positions from large sources of risk.
+      - Warn when historical data is insufficient.
+
+  8. Fees and Portfolio Drag
+      - Track expense ratios, advisory fees, account fees, and idle cash.
+      - Estimate annual and long-term costs.
+      - Support manual metadata when public data is unavailable.
+
+  ## Priority 2 — Wealth Planning
+
+  9. Goal-Linked Portfolio Buckets
+      - Assign accounts or portions of holdings to goals.
+      - Measure funding, risk suitability, liquidity, and probability of success.
+      - Identify assets allocated to multiple goals.
+
+  10. Household Balance Sheet
+      - Add mortgages, loans, interest rates, payments, and maturities.
+      - Calculate liquid net worth, debt ratios, reserves, and payoff scenarios.
+      - Keep household information encrypted locally.
+
+  11. Cash-Flow and Runway Planner
+      - Support income, expenses, contributions, deposits, withdrawals, and planned large expenses.
+      - Project liquidity and goal funding under baseline and adverse scenarios.
+      - Use manual portfolio cash flows to improve performance calculations.
+
+  12. Retirement and Withdrawal Planning
+      - Model accumulation, drawdown, inflation, contribution changes, and sequence risk.
+      - Compare retirement dates, spending levels, and withdrawal strategies.
+      - Present ranges and failure probabilities rather than deterministic forecasts.
+
+  13. Tax Opportunity Watchlist
+      - Identify potential loss-harvesting candidates, approaching long-term dates, embedded gains, and estimated exposure.
+      - Make jurisdiction and tax assumptions explicit.
+      - Remain informational and avoid filing instructions.
+
+  ## Priority 3 — Long-Term Differentiation
+
+  14. Decision Journal
+      - Record theses, expected outcomes, review dates, and rationale.
+      - Compare decisions with subsequent snapshots.
+      - Separate process quality from short-term outcomes.
+
+  15. Local Alerts and Review Cadence
+      - Generate local alerts for concentration, drift, drawdown, liquidity, stale data, and goal-probability thresholds.
+      - Support monthly and quarterly review checklists.
+      - Avoid background brokerage connectivity.
+
+  16. Data Quality Center
+      - Centralize missing cost basis, stale snapshots, unresolved securities, suspect FX rates, duplicates, and incomplete assumptions.
+      - Attach confidence scores to affected analytics.
+
+  17. Personalized Portfolio Report
+      - Generate a local PDF or HTML review covering changes, risks, goals, scenarios, and follow-ups.
+      - Include assumptions and data-quality limitations.
+
+  ## Core Interfaces
+
+  - Use a common InsightFinding model containing category, severity, impact, confidence, evidence, explanation, and suggested actions.
+  - Store non-destructive scenarios containing proposed cash flows, position changes, and allocation changes.
+  - Add encrypted household assumptions, liabilities, manual cash flows, alert thresholds, and journal records.
+  - Cache token-free public market and reference data locally with timestamps and offline/manual fallbacks.
+  - Never present inferred trades, returns, exposures, or tax estimates as confirmed facts.
+
+  ## Validation
+
+  - Test concentrated, diversified, cash-heavy, multi-currency, incomplete, and single-holding portfolios.
+  - Confirm scenarios never mutate actual holdings.
+  - Test stale/unavailable public data and complete offline operation.
+  - Ensure snapshot comparisons distinguish confirmed changes from inference.
+  - Disclose missing-data limitations in risk, tax, performance, and goal outputs.
+  - Confirm household and planning data remains inside the encrypted database.
+
+  ## Assumptions
+
+  - Decision support comes before deeper wealth planning.
+  - Recommendations explain and suggest rather than prescribe exact trades.
+  - Holdings snapshots remain the primary input.
+  - Household details and portfolio cash flows are optional and manually entered.
+  - Token-free public data is permitted with caching and offline fallbacks.
+  - Brokerage credentials, statement APIs, token-based ingestion, and automatic statement retrieval remain out of scope.

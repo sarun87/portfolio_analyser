@@ -1,0 +1,11 @@
+data/
+certs/
+archives/
+.venv/
+frontend/node_modules/
+.pytest_cache/
+__pycache__
+*.pyc
+.DS_Store/"
+portfolio-production.env
+run_self_signed_production

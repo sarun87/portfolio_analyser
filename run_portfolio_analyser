@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+INSECURE=false
+if [[ "${1:-}" == "--insecure" ]]; then
+  INSECURE=true
+  shift
+fi
+if [[ "$#" -gt 0 ]]; then
+  echo "Usage: $0 [--insecure]"
+  echo "  --insecure  Bind HTTP to 0.0.0.0 without TLS. Never use on an untrusted network."
+  exit 2
+fi
+
+if [[ ! -x ".venv/bin/uvicorn" ]]; then
+  echo "Missing backend environment. Run these first:"
+  echo "  python3 -m venv .venv"
+  echo "  source .venv/bin/activate"
+  echo "  pip install -r backend/requirements.txt"
+  echo "  cd frontend && npm install && npm run build"
+  exit 1
+fi
+
+APP_ENVIRONMENT="${PORTFOLIO_ENV:-development}"
+
+if [[ "$INSECURE" == true ]]; then
+  if [[ "$APP_ENVIRONMENT" == "production" ]]; then
+    echo "--insecure cannot be used with PORTFOLIO_ENV=production. Use HTTPS instead."
+    exit 1
+  fi
+  if [[ -z "${PORTFOLIO_TRUSTED_ORIGINS:-}" ]]; then
+    echo "--insecure requires PORTFOLIO_TRUSTED_ORIGINS to name the browser-facing HTTP origin."
+    echo "Example: PORTFOLIO_TRUSTED_ORIGINS=http://192.168.1.25:8000 $0 --insecure"
+    exit 1
+  fi
+  BIND_HOST="${PORTFOLIO_HOST:-0.0.0.0}"
+  HTTP_PORT="${PORTFOLIO_PORT:-8000}"
+  export PORTFOLIO_SESSION_COOKIE_SECURE=false
+  echo "WARNING: Starting insecure HTTP on http://$BIND_HOST:$HTTP_PORT"
+  echo "This exposes portfolio data and session cookies to network interception."
+  exec .venv/bin/uvicorn backend.app.main:app --host "$BIND_HOST" --port "$HTTP_PORT"
+fi
+
+if [[ "$APP_ENVIRONMENT" == "production" ]]; then
+  BIND_HOST="${PORTFOLIO_HOST:-0.0.0.0}"
+  HTTPS_PORT="${PORTFOLIO_PORT:-8443}"
+  SSL_CERTFILE="${PORTFOLIO_SSL_CERTFILE:-}"
+  SSL_KEYFILE="${PORTFOLIO_SSL_KEYFILE:-}"
+
+  if [[ -z "$SSL_CERTFILE" || -z "$SSL_KEYFILE" || -z "${PORTFOLIO_TRUSTED_ORIGINS:-}" ]]; then
+    echo "Production HTTPS requires PORTFOLIO_SSL_CERTFILE, PORTFOLIO_SSL_KEYFILE, and PORTFOLIO_TRUSTED_ORIGINS."
+    echo "See PRODUCTION_HTTPS.md for a reverse-proxy and direct-Uvicorn setup."
+    exit 1
+  fi
+  if [[ ! -r "$SSL_CERTFILE" || ! -r "$SSL_KEYFILE" ]]; then
+    echo "Configured TLS certificate or key file is not readable."
+    exit 1
+  fi
+
+  export PORTFOLIO_SESSION_COOKIE_SECURE=true
+  echo "Starting Portfolio Analyser at https://$BIND_HOST:$HTTPS_PORT"
+  exec .venv/bin/uvicorn backend.app.main:app \
+    --host "$BIND_HOST" --port "$HTTPS_PORT" \
+    --ssl-certfile "$SSL_CERTFILE" --ssl-keyfile "$SSL_KEYFILE"
+fi
+
+BIND_HOST="${PORTFOLIO_HOST:-127.0.0.1}"
+HTTP_PORT="${PORTFOLIO_PORT:-8000}"
+echo "Starting Portfolio Analyser at http://$BIND_HOST:$HTTP_PORT"
+exec .venv/bin/uvicorn backend.app.main:app --host "$BIND_HOST" --port "$HTTP_PORT"

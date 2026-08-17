@@ -1,0 +1,414 @@
+from __future__ import annotations
+
+import sqlite3
+import uuid
+from datetime import date
+from typing import Optional
+
+from backend.app.services.import_service import derive_per_unit_and_total
+from backend.app.services.models import AnalyticsPoint, DashboardAnalytics, Position, PositionCreate, PositionUpdate, TimeSeriesPoint
+from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, get_display_currency
+from backend.app.services.repositories import (
+    get_or_create_account, get_broker_by_name, get_or_create_security,
+    insert_import, insert_position,
+)
+
+
+POSITION_SELECT_SQL = """
+SELECT
+  p.id,
+  s.id AS security_id,
+  b.name AS broker_name,
+  a.account_mask,
+  s.name AS security_name,
+  s.symbol,
+  s.security_type,
+  s.allocation_category,
+  s.sector,
+  s.exchange,
+  s.investment_country,
+  p.snapshot_date,
+  p.acquisition_date,
+  p.lot_number,
+  p.units,
+  p.per_unit_cost_basis,
+  p.total_cost_basis,
+  COALESCE((SELECT ph.price FROM price_history ph WHERE ph.security_id = s.id ORDER BY ph.price_date DESC, ph.id DESC LIMIT 1), p.per_unit_fmv) AS per_unit_fmv,
+  CASE WHEN (SELECT ph.price FROM price_history ph WHERE ph.security_id = s.id ORDER BY ph.price_date DESC, ph.id DESC LIMIT 1) IS NOT NULL
+       THEN p.units * (SELECT ph.price FROM price_history ph WHERE ph.security_id = s.id ORDER BY ph.price_date DESC, ph.id DESC LIMIT 1)
+       ELSE p.total_fmv END AS total_fmv,
+  p.currency,
+  (
+    SELECT MAX(ph.price_date)
+    FROM price_history ph
+    WHERE ph.security_id = s.id
+  ) AS last_price_update
+FROM positions p
+JOIN accounts a ON a.id = p.account_id
+JOIN brokers b ON b.id = a.broker_id
+JOIN securities s ON s.id = p.security_id
+"""
+
+POSITIONS_SQL = POSITION_SELECT_SQL + """
+WHERE p.snapshot_date = (
+  SELECT MAX(latest.snapshot_date) FROM positions latest WHERE latest.account_id = p.account_id
+)
+ORDER BY b.name, a.account_mask, s.name, p.lot_number
+"""
+
+
+def _position_from_row(conn: sqlite3.Connection, row, display_currency: str) -> Position:
+    fmv = row["total_fmv"]
+    cost = row["total_cost_basis"]
+    fmv_display = convert_amount(conn, fmv, row["currency"], display_currency)
+    cost_display = convert_amount(conn, cost, row["currency"], display_currency)
+    gain = fmv_display - cost_display if fmv_display is not None and cost_display is not None else None
+    native_gain = fmv - cost if fmv is not None and cost is not None else None
+    pct = (native_gain / cost * 100) if native_gain is not None and cost not in (None, 0) else None
+    return Position(
+        id=row["id"],
+        security_id=row["security_id"],
+        broker_name=row["broker_name"],
+        account_mask=row["account_mask"],
+        security_name=row["security_name"],
+        symbol=row["symbol"],
+        security_type=row["security_type"],
+        allocation_category=row["allocation_category"],
+        sector=row["sector"],
+        exchange=row["exchange"],
+        investment_country=row["investment_country"],
+        snapshot_date=row["snapshot_date"],
+        acquisition_date=row["acquisition_date"],
+        lot_number=row["lot_number"],
+        units=row["units"],
+        per_unit_cost_basis=row["per_unit_cost_basis"],
+        total_cost_basis=cost,
+        per_unit_fmv=row["per_unit_fmv"],
+        total_fmv=fmv,
+        per_unit_cost_basis_display=convert_amount(conn, row["per_unit_cost_basis"], row["currency"], display_currency),
+        total_cost_basis_display=cost_display,
+        per_unit_fmv_display=convert_amount(conn, row["per_unit_fmv"], row["currency"], display_currency),
+        total_fmv_display=fmv_display,
+        unrealized_gain_loss=gain,
+        unrealized_gain_loss_native=native_gain,
+        unrealized_gain_loss_pct=pct,
+        currency=row["currency"],
+        display_currency=display_currency,
+        last_price_update=row["last_price_update"],
+    )
+
+
+def list_positions(conn: sqlite3.Connection) -> list[Position]:
+    display_currency = get_display_currency(conn)
+    return [_position_from_row(conn, row, display_currency) for row in conn.execute(POSITIONS_SQL)]
+
+
+def get_position(conn: sqlite3.Connection, position_id: int) -> Position:
+    row = conn.execute(
+        POSITION_SELECT_SQL + " WHERE p.id = ?",
+        (position_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError("Position not found.")
+    return _position_from_row(conn, row, get_display_currency(conn))
+
+
+def _clean_optional(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _clean_required(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} is required.")
+    return stripped
+
+
+def _validate_currency(currency: str) -> str:
+    normalized = currency.upper().strip()
+    if normalized not in SUPPORTED_CURRENCIES:
+        raise ValueError("Unsupported currency.")
+    return normalized
+
+
+def create_position(conn: sqlite3.Connection, payload: PositionCreate) -> Position:
+    broker_name = _clean_required(payload.broker_name, "Broker")
+    security_name = _clean_required(payload.security_name, "Security name")
+    security_type = _clean_required(payload.security_type, "Security type")
+    allocation_category = _clean_required(payload.allocation_category, "Allocation category")
+    sector = _clean_required(payload.sector, "Sector")
+    snapshot_date = _clean_required(payload.snapshot_date, "Snapshot date")
+    exchange = _clean_required(payload.exchange, "Exchange")
+    investment_country = _clean_required(payload.investment_country, "Investment country")
+    currency = _validate_currency(payload.currency)
+    symbol = _clean_optional(payload.symbol.upper() if payload.symbol else None)
+    acquisition_date = _clean_optional(payload.acquisition_date)
+    lot_number = _clean_optional(payload.lot_number)
+    per_unit_cost_basis, total_cost_basis = derive_per_unit_and_total(
+        payload.units, payload.per_unit_cost_basis, payload.total_cost_basis,
+    )
+    per_unit_fmv, total_fmv = derive_per_unit_and_total(
+        payload.units, payload.per_unit_fmv, payload.total_fmv,
+    )
+
+    broker = get_broker_by_name(conn, broker_name)
+    if not broker:
+        raise ValueError("Select an existing configured broker before adding a manual position.")
+    broker_id = broker["id"]
+    account_id = get_or_create_account(conn, broker_id, _clean_optional(payload.account_number))
+    security_id = get_or_create_security(
+        conn,
+        name=security_name,
+        security_type=security_type,
+        symbol=symbol,
+        exchange=exchange,
+        investment_country=investment_country,
+        location_source="manual",
+    )
+    conn.execute(
+        """
+        UPDATE securities
+        SET allocation_category = ?, sector = ?, classification_source = 'manual', classified_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (allocation_category, sector, security_id),
+    )
+    import_id = insert_import(
+        conn,
+        broker_id=broker_id,
+        account_id=account_id,
+        statement_date=snapshot_date,
+        source_filename=None,
+        row_count=1,
+        fingerprint=f"manual:{uuid.uuid4().hex}",
+        detected_columns=[],
+        errors=[],
+        locked_fields=[],
+    )
+    position_id = insert_position(
+        conn,
+        import_id=import_id,
+        account_id=account_id,
+        security_id=security_id,
+        snapshot_date=snapshot_date,
+        acquisition_date=acquisition_date,
+        lot_number=lot_number,
+        units=payload.units,
+        per_unit_cost_basis=per_unit_cost_basis,
+        total_cost_basis=total_cost_basis,
+        per_unit_fmv=per_unit_fmv,
+        total_fmv=total_fmv,
+        currency=currency,
+    )
+    return get_position(conn, position_id)
+
+
+def update_position(conn: sqlite3.Connection, position_id: int, payload: PositionUpdate) -> Position:
+    existing = conn.execute(
+        """
+        SELECT p.id, p.security_id
+        FROM positions p
+        WHERE p.id = ?
+        """,
+        (position_id,),
+    ).fetchone()
+    if not existing:
+        raise ValueError("Position not found.")
+
+    security_name = _clean_required(payload.security_name, "Security name")
+    security_type = _clean_required(payload.security_type, "Security type")
+    allocation_category = _clean_required(payload.allocation_category, "Allocation category")
+    sector = _clean_required(payload.sector, "Sector")
+    snapshot_date = _clean_required(payload.snapshot_date, "Snapshot date")
+    currency = _validate_currency(payload.currency)
+    symbol = _clean_optional(payload.symbol.upper() if payload.symbol else None)
+    acquisition_date = _clean_optional(payload.acquisition_date)
+    lot_number = _clean_optional(payload.lot_number)
+    per_unit_cost_basis, total_cost_basis = derive_per_unit_and_total(
+        payload.units,
+        payload.per_unit_cost_basis,
+        payload.total_cost_basis,
+    )
+    per_unit_fmv, total_fmv = derive_per_unit_and_total(
+        payload.units,
+        payload.per_unit_fmv,
+        payload.total_fmv,
+    )
+
+    conn.execute(
+        """
+        UPDATE securities
+        SET symbol = ?,
+            name = ?,
+            security_type = ?,
+            allocation_category = ?,
+            sector = ?,
+            exchange = ?,
+            investment_country = ?,
+            location_source = 'manual',
+            location_resolved_at = CURRENT_TIMESTAMP,
+            classification_source = 'manual',
+            classified_at = CURRENT_TIMESTAMP,
+            price_refresh_supported = ?
+        WHERE id = ?
+        """,
+        (
+            symbol,
+            security_name,
+            security_type,
+            allocation_category,
+            sector,
+            _clean_required(payload.exchange, "Exchange"),
+            _clean_required(payload.investment_country, "Investment country"),
+            0 if security_type.lower() == "cash" else 1,
+            existing["security_id"],
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE positions
+        SET snapshot_date = ?,
+            acquisition_date = ?,
+            lot_number = ?,
+            units = ?,
+            per_unit_cost_basis = ?,
+            total_cost_basis = ?,
+            per_unit_fmv = ?,
+            total_fmv = ?,
+            currency = ?
+        WHERE id = ?
+        """,
+        (
+            snapshot_date,
+            acquisition_date,
+            lot_number,
+            payload.units,
+            per_unit_cost_basis,
+            total_cost_basis,
+            per_unit_fmv,
+            total_fmv,
+            currency,
+            position_id,
+        ),
+    )
+    return get_position(conn, position_id)
+
+
+def profit_loss(conn: sqlite3.Connection) -> list[Position]:
+    return sorted(
+        list_positions(conn),
+        key=lambda position: position.unrealized_gain_loss_native or 0,
+        reverse=True,
+    )
+
+
+def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
+    display_currency = get_display_currency(conn)
+    positions = list_positions(conn)
+    brokerage_value = sum(position.total_fmv_display or 0 for position in positions)
+    total_cost = sum(position.total_cost_basis_display or 0 for position in positions)
+    gain = brokerage_value - total_cost
+    pct = gain / total_cost * 100 if total_cost else None
+
+    growth_totals: dict[str, float] = {}
+    snapshot_dates = [row["snapshot_date"] for row in conn.execute("SELECT DISTINCT snapshot_date FROM positions ORDER BY snapshot_date")]
+    for snapshot_date in snapshot_dates:
+        # Each date represents the complete portfolio as it stood then: use
+        # the latest available snapshot for every account, not only accounts
+        # that happened to import on that exact date.
+        rows = conn.execute(
+            """SELECT p.currency, COALESCE(p.total_fmv, p.units * COALESCE(p.per_unit_fmv, 0), 0) AS value
+               FROM positions p
+               WHERE p.snapshot_date = (
+                 SELECT MAX(previous.snapshot_date) FROM positions previous
+                 WHERE previous.account_id = p.account_id AND previous.snapshot_date <= ?
+               )""",
+            (snapshot_date,),
+        ).fetchall()
+        growth_totals[snapshot_date] = sum(
+            convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0
+            for row in rows
+        )
+    # Add/replace today's point with live position values (including any
+    # current price overlays), so the graph reaches the current portfolio.
+    if positions:
+        growth_totals[date.today().isoformat()] = brokerage_value
+
+    asset_totals: dict[str, float] = {}
+    broker_totals: dict[str, float] = {}
+    country_totals: dict[str, float] = {}
+    exchange_totals: dict[str, float] = {}
+    cash = 0.0
+    invested = 0.0
+    for position in positions:
+        value = position.total_fmv_display or 0
+        asset_totals[position.allocation_category] = asset_totals.get(position.allocation_category, 0) + value
+        broker_totals[position.broker_name] = broker_totals.get(position.broker_name, 0) + value
+        country_totals[position.investment_country] = country_totals.get(position.investment_country, 0) + value
+        exchange_totals[position.exchange] = exchange_totals.get(position.exchange, 0) + value
+        if position.security_type.lower() == "cash":
+            cash += value
+        else:
+            invested += value
+
+    static_rows = conn.execute(
+        """
+        SELECT category, currency, SUM(amount) AS value
+        FROM static_accounts
+        GROUP BY category, currency
+        """
+    ).fetchall()
+    static_accounts_value = 0.0
+    static_category_totals: dict[str, float] = {}
+    for row in static_rows:
+        value = convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0
+        static_accounts_value += value
+        static_category_totals[row["category"]] = static_category_totals.get(row["category"], 0) + value
+
+    real_estate_rows = conn.execute(
+        """
+        SELECT currency, SUM(current_value) AS value
+        FROM real_estate_assets
+        GROUP BY currency
+        """
+    ).fetchall()
+    real_estate_value = sum(
+        convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0
+        for row in real_estate_rows
+    )
+    private_equity_value = sum(convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0 for row in conn.execute(
+        "SELECT currency, SUM(quantity * last_valuation_per_unit) AS value FROM private_equity_assets GROUP BY currency"
+    ))
+    total_net_worth = brokerage_value + static_accounts_value + real_estate_value + private_equity_value
+
+    net_worth_allocation = [AnalyticsPoint(label="Brokerage", value=brokerage_value)]
+    for label in ["Bank Account", "Retirement Account", "Other"]:
+        net_worth_allocation.append(AnalyticsPoint(label=label, value=static_category_totals.get(label, 0)))
+    net_worth_allocation.append(AnalyticsPoint(label="Real Estate", value=real_estate_value))
+    net_worth_allocation.append(AnalyticsPoint(label="Private Equity", value=private_equity_value))
+
+    return DashboardAnalytics(
+        display_currency=display_currency,
+        brokerage_value=brokerage_value,
+        static_accounts_value=static_accounts_value,
+        real_estate_value=real_estate_value,
+        private_equity_value=private_equity_value,
+        total_net_worth=total_net_worth,
+        total_value=total_net_worth,
+        total_cost_basis=total_cost,
+        unrealized_gain_loss=gain,
+        unrealized_gain_loss_pct=pct,
+        portfolio_growth=[TimeSeriesPoint(date=date, value=value) for date, value in sorted(growth_totals.items())],
+        asset_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(asset_totals.items())],
+        broker_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(broker_totals.items())],
+        country_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(country_totals.items())],
+        exchange_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(exchange_totals.items())],
+        cash_vs_invested=[
+            AnalyticsPoint(label="Cash", value=cash),
+            AnalyticsPoint(label="Invested", value=invested),
+        ],
+        net_worth_allocation=[point for point in net_worth_allocation if point.value > 0],
+    )

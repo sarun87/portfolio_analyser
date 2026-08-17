@@ -1,0 +1,208 @@
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const apiMock = vi.hoisted(() => ({
+  previewImport: vi.fn(), commitImport: vi.fn(), previewBroker: vi.fn(), createBroker: vi.fn(), updateBroker: vi.fn(), deleteBroker: vi.fn(),
+  lookThrough: vi.fn(), saveFundComposition: vi.fn(), previewPublicMetadata: vi.fn(), acceptPublicComposition: vi.fn(),
+  riskAnalysis: vi.fn(), riskSettings: vi.fn(), refreshMarketHistory: vi.fn(), saveRiskSettings: vi.fn(),
+  importMarketHistory: vi.fn(), importManualMarketSeries: vi.fn(), feeAnalysis: vi.fn(), securityFees: vi.fn(),
+  feeSettings: vi.fn(), saveSecurityFee: vi.fn(), previewPublicMetadataForFee: vi.fn(), acceptPublicFee: vi.fn(),
+  portfolioFees: vi.fn(), createPortfolioFee: vi.fn(), updatePortfolioFee: vi.fn(), deletePortfolioFee: vi.fn(),
+  saveFeeSettings: vi.fn()
+}));
+
+vi.mock("../lib/api", () => ({ api: apiMock }));
+
+import { BrokerSettings, ExposureInsights, ExposurePage, FeesPage, InsightsPage, MobilePositionCard, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
+import type { Insights, Position } from "../lib/types";
+
+const fund = {
+  id: 1, security_id: 10, broker_name: "HDFC", account_mask: "****1", security_name: "Index Fund", symbol: "FUND",
+  security_type: "ETF", allocation_category: "Large Cap", sector: "Diversified", exchange: "NSE",
+  investment_country: "India", snapshot_date: "2026-08-01", units: 1, total_fmv: 8350,
+  total_fmv_display: 100, currency: "INR", display_currency: "USD"
+} as Position;
+
+const insights = {
+  display_currency:"USD", projection_setup_required:false, concentration:[{label:"FUND",value:100}], top_5_share:100, top_10_share:100,
+  currency_exposure:[{label:"USD",value:100}], country_exposure:[{label:"United States",value:100}], exchange_exposure:[{label:"NYSE",value:100}],
+  allocation_drift:{category:[{label:"Large Cap",actual_amount:100,actual_percent:100,target_percent:80,tolerance_percent:10,minimum_percent:70,maximum_percent:90,drift_percent:20,rebalance_amount:-20,compliant:false,outside_range_percent:10,policy_gap_amount:10}]}, allocation_policy:{configured_targets:1,compliant_targets:0,breached_targets:1,unconfigured_dimensions:["country","currency"],largest_breach:{label:"Large Cap",actual_percent:100,minimum_percent:70,maximum_percent:90,outside_range_percent:10}}, liquidity:[{label:"Liquid",value:100}], cash_runway_months:6,
+  tax_lots:[{position_id:1,security_name:"Index Fund",classification:"Long term",gain:10,indicative_tax:2}], value_history:[], rolling_growth:{"1":1,"3":2,"12":3}, drawdown:[], holding_value_change:[{label:"FUND",value:10}], forecast:{monte_carlo_terminal:{p10:90,p50:110,p90:130}}, findings:[],
+  snapshot_comparison:{available:false,latest_value:0,previous_value:0,total_value_change:0,total_value_change_percent:0,cash_change:0,new_holdings:[],exited_holdings:[],position_changes:[],coverage_changes:[],unusual_valuation_changes:[],allocation_shifts:[],disclosure:"Need another snapshot"}
+} as Insights;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  apiMock.lookThrough.mockResolvedValue({display_currency:"USD",portfolio_value:100,composition_coverage_percent:0,
+    company:[],sector:[],country:[],currency:[],asset_category:[],overlaps:[],compositions:[],warnings:["No composition"]});
+  apiMock.riskSettings.mockResolvedValue({benchmark_symbol:"^GSPC",benchmark_currency:"USD",minimum_observations:60});
+  apiMock.riskAnalysis.mockResolvedValue({display_currency:"USD",benchmark_symbol:"^GSPC",history_years:5,coverage_percent:0,
+    covered_portfolio_volatility_percent:null,covered_portfolio_beta:null,covered_portfolio_max_drawdown_percent:null,
+    holdings:[],correlations:[],warnings:["History unavailable"]});
+  apiMock.refreshMarketHistory.mockResolvedValue([{series_key:"security:10",symbol:"FUND",refreshed:false,observation_count:0,message:"offline"}]);
+  apiMock.saveRiskSettings.mockResolvedValue({benchmark_symbol:"^GSPC",benchmark_currency:"USD",minimum_observations:60});
+  apiMock.importManualMarketSeries.mockResolvedValue({series_key:"benchmark:^GSPC",symbol:"^GSPC",refreshed:true,observation_count:2,message:"saved"});
+  apiMock.securityFees.mockResolvedValue([{security_id:10,security_name:"Index Fund",expense_ratio_percent:null,source:"unset",as_of_date:null,reviewed_at:"",stale:true}]);
+  apiMock.feeSettings.mockResolvedValue({cash_reserve_months:6});
+  apiMock.feeAnalysis.mockResolvedValue({display_currency:"USD",portfolio_value:100,annual_fund_expenses:0,annual_advisory_fees:0,
+    annual_fixed_fees:0,total_annual_fees:0,annual_fee_percent:0,cash_value:0,reserve_target:null,potential_idle_cash:null,
+    potential_cash_drag:null,holdings:[],portfolio_fees:[],projections:[],warnings:["Set assumptions"]});
+  apiMock.createPortfolioFee.mockResolvedValue({id:1,name:"Advice",fee_type:"advisory_percent",annual_percent:1,currency:"USD",enabled:true});
+  apiMock.previewPublicMetadata.mockResolvedValue({security_id:10,provider:"public",fetched_at:"2026-08-01",composition:null,expense_ratio_percent:.25,message:"draft"});
+  apiMock.acceptPublicFee.mockResolvedValue({security_id:10,security_name:"Index Fund",expense_ratio_percent:.25,source:"public",reviewed_at:"2026-08-01",stale:false});
+  apiMock.previewImport.mockResolvedValue({
+    broker_id:1, broker_name:"Fidelity", configuration_version:3, statement_date:"2026-08-01", detected_columns:["Symbol"],
+    suggested_mapping:{symbol:"Symbol"}, errors:[], duplicate:false, fingerprint:"preview", locked_fields:[],
+    rows:[{row_number:2,account_number:"FID-1",security_name:"Index Fund",symbol:"FUND",security_type:"ETF",
+      allocation_category:"Large Cap",sector:"Diversified",exchange:"NSE",investment_country:"India",
+      location_status:"statement",acquisition_date:"2024-01-15",lot_number:"LOT-1",units:2,
+      per_unit_cost_basis:75,total_cost_basis:150,per_unit_fmv:100,total_fmv:200,currency:"INR"}]
+  });
+});
+
+afterEach(cleanup);
+
+describe("decision coach workspaces", () => {
+  it("places analytics content in its focused workspaces and defers phone charts", () => {
+    Object.defineProperty(window, "innerWidth", {configurable:true, value:375});
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    render(<ExposureInsights insights={insights}/>);
+    expect(screen.getAllByText("Top 5 concentration")).toHaveLength(2);
+    expect(screen.getAllByRole("button", {name:"Show chart"})).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", {name:"Show chart"})[0]);
+    expect(screen.getByRole("button", {name:"Hide chart"})).toBeInTheDocument();
+    cleanup();
+    render(<InsightsPage insights={insights}/>);
+    expect(screen.queryByText("Configured allocation drift")).not.toBeInTheDocument();
+    expect(screen.getByText("1 policy breach")).toBeInTheDocument();
+    cleanup();
+    render(<ValueMetricsPage insights={insights}/>);
+    expect(screen.getByText("Allocation policy and drift")).toBeInTheDocument();
+    expect(screen.getByText("10.00% outside")).toBeInTheDocument();
+    expect(screen.getByText("Unrealized tax view")).toBeInTheDocument();
+    Object.defineProperty(window, "innerWidth", {configurable:true, value:1024});
+    vi.unstubAllGlobals();
+  });
+
+  it("expands mobile cards from the card, hides the security name, and isolates refresh", () => {
+    const refresh = vi.fn();
+    render(<MobilePositionCard position={fund} canRefresh onRefresh={refresh}/>);
+    const card = screen.getByRole("button", {name:"FUND details"});
+    expect(card).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Index Fund")).not.toBeInTheDocument();
+    fireEvent.keyDown(card, {key:"Enter"});
+    expect(card).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", {name:/refresh price/i}));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(card).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("loads exposure and opens the manual fund editor", async () => {
+    const {rerender}=render(<ExposurePage positions={[fund]}/>);
+    expect(await screen.findByText("Effective companies")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Fund"), {target:{value:"10"}});
+    fireEvent.click(screen.getByRole("button", {name:/add row/i}));
+    expect(screen.getByDisplayValue("new-1")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Fund"), {target:{value:""}});
+    expect(screen.queryByRole("button", {name:/add row/i})).not.toBeInTheDocument();
+    rerender(<ExposurePage positions={[{...fund,total_fmv_display:110}]}/>);
+    await waitFor(()=>expect(apiMock.lookThrough).toHaveBeenCalledTimes(2));
+  });
+
+  it("refreshes historical risk without hiding an offline result", async () => {
+    render(<RiskPage positions={[fund]} currency="USD"/>);
+    expect(await screen.findByText("Holding risk decomposition")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name:/refresh all histories/i}));
+    await waitFor(() => expect(apiMock.refreshMarketHistory).toHaveBeenCalledOnce());
+    expect(await screen.findByText("0 of 1 series refreshed.")).toBeInTheDocument();
+  });
+
+  it("saves an edited benchmark before importing its manual history", async () => {
+    render(<RiskPage positions={[fund]} currency="USD"/>);
+    await screen.findByText("Holding risk decomposition");
+    fireEvent.change(screen.getByLabelText("Benchmark symbol"), {target:{value:"^NSEI"}});
+    fireEvent.change(screen.getByLabelText("Series"), {target:{value:"benchmark"}});
+    fireEvent.change(screen.getByLabelText("CSV: date,adjusted_close"), {target:{value:"2026-01-01,100\n2026-01-02,101"}});
+    fireEvent.click(screen.getByRole("button", {name:/import history/i}));
+    await waitFor(()=>expect(apiMock.importManualMarketSeries).toHaveBeenCalledOnce());
+    expect(apiMock.saveRiskSettings.mock.invocationCallOrder[0]).toBeLessThan(apiMock.importManualMarketSeries.mock.invocationCallOrder[0]);
+    expect(apiMock.importManualMarketSeries).toHaveBeenCalledWith(expect.objectContaining({series_key:"benchmark:^NSEI"}));
+  });
+
+  it("creates a portfolio advisory fee from the fees workspace", async () => {
+    render(<FeesPage positions={[fund]} currency="USD"/>);
+    expect(await screen.findByText("Security expense ratios")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Name"), {target:{value:"Advice"}});
+    fireEvent.change(screen.getByLabelText("Annual %"), {target:{value:"1"}});
+    fireEvent.click(screen.getByRole("button", {name:/add fee/i}));
+    await waitFor(() => expect(apiMock.createPortfolioFee).toHaveBeenCalledWith(expect.objectContaining({name:"Advice",annual_percent:1})));
+  });
+
+  it("requires a visible public fee draft before acceptance", async () => {
+    render(<FeesPage positions={[fund]} currency="USD"/>);
+    await screen.findByText("Security expense ratios");
+    const accept=screen.getByRole("button",{name:"Accept public"});
+    expect(accept).toBeDisabled();
+    fireEvent.click(screen.getByRole("button",{name:"Public draft"}));
+    await waitFor(()=>expect(accept).toBeEnabled());
+    fireEvent.click(accept);
+    await waitFor(()=>expect(apiMock.acceptPublicFee).toHaveBeenCalledWith(10));
+  });
+
+  it("explains Scenario Lab inputs as display-currency amounts", () => {
+    render(<ScenarioLab scenarios={[]} positions={[]} goals={{display_currency:"INR",investable_financial_assets:0,total_allocated:0,unallocated_remainder:0,over_allocated:false,goals:[]}} currency={{display_currency:"INR",supported_currencies:["INR","USD"]}} onChanged={vi.fn()}/>);
+    expect(screen.getByText("All values below are amounts in INR, not percentages. This model does not change stored positions.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Contribution \/ deposit/)).toBeInTheDocument();
+    expect(screen.getByText("External cash added to the portfolio in INR.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Withdrawal \/ distribution/)).toBeInTheDocument();
+    expect(screen.getByText(/positive adds cash, negative removes it/i)).toBeInTheDocument();
+  });
+
+  it("uses saved broker mappings while exposing import-only locks and normalized preview fields", async () => {
+    render(<UploadPage brokers={[{id:1,name:"Fidelity"}]} onImported={vi.fn()}/>);
+    const file = {name:"positions.csv",text:vi.fn().mockResolvedValue("Symbol\nFUND")};
+    fireEvent.change(screen.getByLabelText("CSV File"), {target:{files:[file]}});
+    await waitFor(()=>expect(screen.getByRole("button",{name:/preview import/i})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button",{name:/preview import/i}));
+    await waitFor(()=>expect(apiMock.previewImport).toHaveBeenCalledOnce());
+    expect(apiMock.previewImport).toHaveBeenCalledWith(expect.objectContaining({broker_id:1}));
+
+    for (const label of ["Allocation Category","Sector","Exchange","Investment Country"]) {
+      expect(screen.getByRole("checkbox",{name:label})).toBeInTheDocument();
+    }
+    expect(screen.getByText(/Column mappings are saved with this broker/)).toBeInTheDocument();
+    for (const heading of ["Account","Allocation","Location","Acquisition Date","Lot","Currency"]) {
+      expect(screen.getByRole("columnheader",{name:heading})).toBeInTheDocument();
+    }
+    expect(screen.getByText("Diversified")).toBeInTheDocument();
+    expect(screen.getByText("India")).toBeInTheDocument();
+    expect(screen.getByText("statement")).toBeInTheDocument();
+    expect(screen.getByText("LOT-1")).toBeInTheDocument();
+  });
+
+  it("opens the broker editor and supports the advanced JSON configuration mode", () => {
+    render(<BrokerSettings brokers={[{id:1,name:"Fidelity",default_currency:"USD",locked_fields:[],configuration_version:1,header_signature:[],mappings:{}}]} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", {name:/add broker/i}));
+    expect(screen.getByRole("heading", {name:"New broker"})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name:"Advanced JSON"}));
+    expect(screen.getByLabelText("Broker configuration JSON")).toBeInTheDocument();
+    expect(screen.getByRole("button", {name:"Save broker"})).toBeDisabled();
+  });
+
+  it("keeps detected CSV columns available while a broker mapping is edited", async () => {
+    apiMock.previewBroker.mockResolvedValue({
+      header_signature:["Account","Symbol","Name","Quantity"], detected_headers:["Account","Symbol","Name","Quantity"],
+      mappings:{account_number:"Account",symbol:"Symbol",security_name:"Name",units:"Quantity"}, rows:[{row_number:2,security_name:"Alpha",symbol:"AAA",security_type:"Other",units:2}], invalid_rows:[], errors:[], valid:true
+    });
+    render(<BrokerSettings brokers={[]} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", {name:/add broker/i}));
+    fireEvent.change(screen.getByLabelText("Name"), {target:{value:"Test broker"}});
+    fireEvent.change(screen.getByLabelText("Sample CSV text"), {target:{value:"Account,Symbol,Name,Quantity\nA,AAA,Alpha,2"}});
+    fireEvent.click(screen.getByRole("button", {name:/preview configuration/i}));
+    await waitFor(() => expect(apiMock.previewBroker).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getAllByLabelText("Symbol")[1], {target:{value:"Name"}});
+    expect(screen.getByLabelText("Account Number")).toHaveValue("Account");
+    expect(screen.getAllByLabelText("Security Name")[1]).toHaveValue("Name");
+    expect(screen.getAllByLabelText("Units")[1]).toHaveValue("Quantity");
+  });
+});

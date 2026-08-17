@@ -1,0 +1,350 @@
+import sqlite3
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS brokers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  default_currency TEXT NOT NULL DEFAULT 'USD',
+  notes TEXT,
+  locked_fields_json TEXT NOT NULL DEFAULT '[]',
+  header_signature_json TEXT NOT NULL DEFAULT '[]',
+  mappings_json TEXT NOT NULL DEFAULT '{}',
+  configuration_version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  broker_id INTEGER NOT NULL REFERENCES brokers(id) ON DELETE CASCADE,
+  account_number_enc TEXT NOT NULL,
+  account_mask TEXT NOT NULL,
+  account_fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (broker_id, account_fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS statement_imports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  broker_id INTEGER NOT NULL REFERENCES brokers(id),
+  account_id INTEGER REFERENCES accounts(id),
+  statement_date TEXT NOT NULL,
+  source_filename TEXT,
+  row_count INTEGER NOT NULL,
+  fingerprint TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  detected_columns TEXT NOT NULL,
+  errors_json TEXT NOT NULL DEFAULT '[]',
+  locked_fields_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS securities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT,
+  name TEXT NOT NULL,
+  security_type TEXT NOT NULL,
+  allocation_category TEXT NOT NULL DEFAULT 'Unclassified',
+  sector TEXT NOT NULL DEFAULT 'Unclassified',
+  classification_source TEXT,
+  classified_at TEXT,
+  price_refresh_supported INTEGER NOT NULL DEFAULT 1,
+  exchange TEXT NOT NULL DEFAULT 'Unresolved',
+  investment_country TEXT NOT NULL DEFAULT 'Unresolved',
+  location_source TEXT,
+  location_resolved_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (symbol, exchange)
+);
+
+CREATE TABLE IF NOT EXISTS positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id INTEGER NOT NULL REFERENCES statement_imports(id) ON DELETE CASCADE,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  security_id INTEGER NOT NULL REFERENCES securities(id),
+  snapshot_date TEXT NOT NULL,
+  acquisition_date TEXT,
+  lot_number TEXT,
+  units REAL NOT NULL DEFAULT 0,
+  per_unit_cost_basis REAL,
+  total_cost_basis REAL,
+  per_unit_fmv REAL,
+  total_fmv REAL,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  row_notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS price_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+  price REAL NOT NULL,
+  price_date TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (security_id, price_date, provider)
+);
+
+CREATE TABLE IF NOT EXISTS fx_rates (
+  from_currency TEXT NOT NULL,
+  to_currency TEXT NOT NULL,
+  rate REAL NOT NULL,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (from_currency, to_currency)
+);
+
+CREATE TABLE IF NOT EXISTS static_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  entity_name TEXT NOT NULL,
+  account_type TEXT NOT NULL,
+  account_holder TEXT NOT NULL,
+  account_number_enc TEXT,
+  account_mask TEXT,
+  account_fingerprint TEXT,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  amount REAL NOT NULL DEFAULT 0,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS real_estate_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  property_info TEXT NOT NULL,
+  entity_name TEXT,
+  purchase_date TEXT,
+  purchase_value REAL NOT NULL DEFAULT 0,
+  current_value REAL NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS financial_assumptions (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  expected_annual_return REAL,
+  annual_volatility REAL,
+  inflation_rate REAL,
+  monthly_household_contribution REAL,
+  monthly_expenses REAL,
+  short_term_tax_rate REAL,
+  long_term_tax_rate REAL,
+  long_term_holding_days INTEGER,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS allocation_targets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dimension TEXT NOT NULL CHECK (dimension IN ('asset_category', 'country', 'currency')),
+  label TEXT NOT NULL,
+  target_percent REAL NOT NULL CHECK (target_percent >= 0 AND target_percent <= 100),
+  tolerance_percent REAL NOT NULL DEFAULT 10 CHECK (tolerance_percent >= 0 AND tolerance_percent <= 100),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (dimension, label)
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT,
+  target_amount REAL NOT NULL CHECK (target_amount >= 0),
+  target_currency TEXT NOT NULL DEFAULT 'USD',
+  target_month TEXT NOT NULL,
+  allocated_amount REAL NOT NULL DEFAULT 0 CHECK (allocated_amount >= 0),
+  allocated_currency TEXT NOT NULL DEFAULT 'USD',
+  monthly_contribution REAL NOT NULL DEFAULT 0 CHECK (monthly_contribution >= 0),
+  contribution_currency TEXT NOT NULL DEFAULT 'USD',
+  priority INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS saved_scenarios (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT,
+  scenario_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fund_compositions (
+  security_id INTEGER PRIMARY KEY REFERENCES securities(id) ON DELETE CASCADE,
+  source TEXT NOT NULL DEFAULT 'manual',
+  as_of_date TEXT,
+  reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fund_constituents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fund_security_id INTEGER NOT NULL REFERENCES fund_compositions(security_id) ON DELETE CASCADE,
+  constituent_key TEXT NOT NULL,
+  linked_security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL,
+  symbol TEXT,
+  name TEXT NOT NULL,
+  weight_percent REAL NOT NULL CHECK (weight_percent > 0 AND weight_percent <= 100),
+  sector TEXT NOT NULL DEFAULT 'Unclassified',
+  country TEXT NOT NULL DEFAULT 'Unresolved',
+  currency TEXT NOT NULL DEFAULT 'Unresolved',
+  asset_category TEXT NOT NULL DEFAULT 'Unclassified',
+  UNIQUE (fund_security_id, constituent_key)
+);
+
+CREATE TABLE IF NOT EXISTS fund_metadata (
+  security_id INTEGER PRIMARY KEY REFERENCES securities(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL DEFAULT 'manual',
+  category TEXT,
+  thesis TEXT,
+  fund_family TEXT,
+  inception_date TEXT,
+  assets_under_management REAL,
+  yield_percent REAL,
+  turnover_percent REAL,
+  beta REAL,
+  expense_ratio_percent REAL,
+  return_3y_percent REAL,
+  return_5y_percent REAL,
+  return_10y_percent REAL,
+  return_since_inception_percent REAL,
+  as_of_date TEXT,
+  fetched_at TEXT,
+  unavailable_fields_json TEXT NOT NULL DEFAULT '[]',
+  reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS private_equity_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_name TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  share_class TEXT NOT NULL CHECK (share_class IN ('Common', 'Preferred')),
+  quantity REAL NOT NULL CHECK (quantity >= 0),
+  purchase_price_per_unit REAL NOT NULL CHECK (purchase_price_per_unit >= 0),
+  investment_date TEXT,
+  last_valuation_per_unit REAL NOT NULL CHECK (last_valuation_per_unit >= 0),
+  valuation_date TEXT,
+  ownership_percent REAL,
+  valuation_source TEXT,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS reference_cache (
+  cache_key TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS market_series (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  series_key TEXT NOT NULL UNIQUE,
+  series_type TEXT NOT NULL CHECK (series_type IN ('security', 'benchmark', 'fx')),
+  security_id INTEGER REFERENCES securities(id) ON DELETE CASCADE,
+  symbol TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  source TEXT NOT NULL,
+  refreshed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS market_series_points (
+  series_id INTEGER NOT NULL REFERENCES market_series(id) ON DELETE CASCADE,
+  observation_date TEXT NOT NULL,
+  adjusted_close REAL NOT NULL CHECK (adjusted_close > 0),
+  PRIMARY KEY (series_id, observation_date)
+);
+
+CREATE TABLE IF NOT EXISTS risk_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  benchmark_symbol TEXT,
+  benchmark_currency TEXT,
+  minimum_observations INTEGER NOT NULL DEFAULT 60 CHECK (minimum_observations >= 20),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS security_fee_metadata (
+  security_id INTEGER PRIMARY KEY REFERENCES securities(id) ON DELETE CASCADE,
+  expense_ratio_percent REAL CHECK (expense_ratio_percent >= 0 AND expense_ratio_percent <= 100),
+  source TEXT NOT NULL DEFAULT 'manual',
+  as_of_date TEXT,
+  reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_fees (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  fee_type TEXT NOT NULL CHECK (fee_type IN ('advisory_percent', 'fixed_account')),
+  annual_percent REAL CHECK (annual_percent >= 0 AND annual_percent <= 100),
+  annual_amount REAL CHECK (annual_amount >= 0),
+  currency TEXT NOT NULL DEFAULT 'USD',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fee_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  cash_reserve_months REAL NOT NULL DEFAULT 6 CHECK (cash_reserve_months >= 0),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_positions_snapshot ON positions(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_positions_security ON positions(security_id);
+CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id);
+CREATE INDEX IF NOT EXISTS idx_securities_location ON securities(investment_country, exchange);
+CREATE INDEX IF NOT EXISTS idx_price_history_security ON price_history(security_id, price_date);
+CREATE INDEX IF NOT EXISTS idx_static_accounts_category ON static_accounts(category);
+CREATE INDEX IF NOT EXISTS idx_allocation_targets_dimension ON allocation_targets(dimension);
+CREATE INDEX IF NOT EXISTS idx_goals_target_month ON goals(target_month);
+CREATE INDEX IF NOT EXISTS idx_saved_scenarios_updated ON saved_scenarios(updated_at);
+CREATE INDEX IF NOT EXISTS idx_fund_constituents_fund ON fund_constituents(fund_security_id);
+CREATE INDEX IF NOT EXISTS idx_private_equity_company ON private_equity_assets(company_name);
+CREATE INDEX IF NOT EXISTS idx_market_series_security ON market_series(security_id);
+CREATE INDEX IF NOT EXISTS idx_market_points_date ON market_series_points(observation_date);
+"""
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+    _ensure_column(conn, "securities", "sector", "TEXT NOT NULL DEFAULT 'Unclassified'")
+    _ensure_column(conn, "brokers", "default_currency", "TEXT NOT NULL DEFAULT 'USD'")
+    _ensure_column(conn, "brokers", "notes", "TEXT")
+    _ensure_column(conn, "brokers", "locked_fields_json", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(conn, "brokers", "header_signature_json", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(conn, "brokers", "mappings_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "brokers", "configuration_version", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "allocation_targets", "tolerance_percent", "REAL NOT NULL DEFAULT 10")
+    ensure_fx_rates(conn)
+    # This release intentionally has no legacy broker/import migration.  On
+    # first open, remove prior portfolio records before creating the editable
+    # starter broker configurations.
+    release = conn.execute("SELECT value FROM app_settings WHERE key = 'broker_configuration_release'").fetchone()
+    if not release or release["value"] != "3":
+        for table in ("price_history", "positions", "statement_imports", "accounts", "securities", "static_accounts", "real_estate_assets", "private_equity_assets", "brokers"):
+            conn.execute(f"DELETE FROM {table}")
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('broker_configuration_release', '3') ON CONFLICT(key) DO UPDATE SET value='3'")
+        conn.execute("DROP TABLE IF EXISTS broker_import_sections")
+    conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if column not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def ensure_fx_rates(conn: sqlite3.Connection) -> None:
+    from backend.app.services.fx_service import ensure_default_fx_rates
+
+    ensure_default_fx_rates(conn)

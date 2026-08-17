@@ -1,0 +1,111 @@
+from backend.app.core.encryption import generate_salt, key_manager
+from backend.app.db.schema import init_db
+from backend.app.services.asset_service import create_real_estate_asset, create_static_account
+from backend.app.services.broker_service import preview_broker_configuration, save_broker
+from backend.app.services.import_service import commit_statement, preview_statement
+from backend.app.services.models import BrokerDraft, ImportCommitRequest, ImportPreviewRequest, RealEstateAssetCreate, StaticAccountCreate
+from backend.app.services.portfolio_service import dashboard, list_positions, profit_loss, update_position
+from backend.app.services.models import PositionUpdate
+from backend.app.services.repositories import clean_brokerage_data
+
+
+def unlock():
+    key_manager.setup("correct horse battery staple", generate_salt())
+
+
+def broker_for(conn, csv_text: str, *, name="Configured broker", locks=None):
+    headers = csv_text.splitlines()[0].split(",")
+    mapping = {
+        "account_number": "Account", "symbol": "Symbol", "security_name": "Name", "security_type": "Type",
+        "units": "Units", "total_cost_basis": "Cost", "per_unit_cost_basis": "Cost Per Unit",
+        "total_fmv": "Value", "per_unit_fmv": "Price", "currency": "Currency", "exchange": "Exchange",
+        "investment_country": "Country", "allocation_category": "Allocation", "sector": "Sector", "lot_number": "Lot",
+    }
+    mapping = {field: column for field, column in mapping.items() if column in headers}
+    draft = BrokerDraft(name=name, default_currency="USD", locked_fields=locks or [], header_signature=headers, mappings=mapping)
+    preview = preview_broker_configuration(conn, draft, csv_text, "USD")
+    assert preview.valid, preview.errors
+    return save_broker(conn, draft, preview)
+
+
+def request_for(conn, broker, csv_text, statement_date, *, locks=None):
+    preview = preview_statement(conn, ImportPreviewRequest(
+        broker_id=broker["id"], csv_text=csv_text, statement_date=statement_date, locked_fields=locks,
+    ))
+    assert not preview.errors, preview.errors
+    return ImportCommitRequest(
+        broker_id=broker["id"], csv_text=csv_text, statement_date=statement_date,
+        locked_fields=locks, expected_configuration_version=preview.configuration_version,
+    )
+
+
+CSV = """Account,Symbol,Name,Type,Units,Cost,Value,Currency,Exchange,Country,Allocation,Sector,Lot
+A-1234,AAPL,Apple Inc,Stock,10,1500,2200,USD,NASDAQ,United States,Large Cap,Technology,L1
+A-1234,VTI,Vanguard Total Market ETF,ETF,5,1000,1500,USD,NYSE,United States,Hybrid Fund,Diversified,L2
+A-1234,CASH,Cash,Cash,550,550,550,USD,Unresolved,United States,Cash,Unclassified,CASH
+"""
+
+
+def test_configured_import_populates_dashboard_and_current_positions(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    broker = broker_for(sqlite_conn, CSV)
+    result = commit_statement(sqlite_conn, request_for(sqlite_conn, broker, CSV, "2026-06-30"))
+    assert result.imported_rows == 3
+    assert {p.symbol for p in list_positions(sqlite_conn)} == {"AAPL", "VTI", "CASH"}
+    analytics = dashboard(sqlite_conn)
+    assert analytics.brokerage_value == 4250
+    assert {point.label for point in analytics.asset_allocation} >= {"Large Cap", "Hybrid Fund", "Cash"}
+
+
+def test_configured_import_is_duplicate_safe_and_derives_values(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    csv = "Account,Symbol,Name,Type,Units,Cost Per Unit,Price\nA-1,AAPL,Apple,Stock,10,150,220\n"
+    broker = broker_for(sqlite_conn, csv)
+    request = request_for(sqlite_conn, broker, csv, "2026-06-30")
+    assert not commit_statement(sqlite_conn, request).duplicate
+    assert commit_statement(sqlite_conn, request).duplicate
+    position = list_positions(sqlite_conn)[0]
+    assert (position.total_cost_basis, position.total_fmv) == (1500, 2200)
+
+
+def test_import_locks_preserve_prior_lot_values_without_changing_broker_defaults(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    first = "Account,Symbol,Name,Type,Units,Cost,Value,Lot\nA-1,AAPL,Apple,Stock,10,1000,2000,L1\n"
+    second = "Account,Symbol,Name,Type,Units,Cost,Value,Lot\nA-1,AAPL,Changed,Stock,12,1800,2520,L1\n"
+    broker = broker_for(sqlite_conn, first)
+    commit_statement(sqlite_conn, request_for(sqlite_conn, broker, first, "2026-06-30"))
+    preview = preview_statement(sqlite_conn, ImportPreviewRequest(broker_id=broker["id"], csv_text=second, statement_date="2026-07-31", locked_fields=["security_name", "total_cost_basis"]))
+    assert preview.rows[0].security_name == "Apple"
+    commit_statement(sqlite_conn, ImportCommitRequest(broker_id=broker["id"], csv_text=second, statement_date="2026-07-31", locked_fields=["security_name", "total_cost_basis"], expected_configuration_version=preview.configuration_version))
+    current = list_positions(sqlite_conn)[0]
+    assert (current.snapshot_date, current.security_name, current.units, current.total_cost_basis) == ("2026-07-31", "Apple", 12, 1000)
+    assert broker["locked_fields"] == []
+
+
+def test_import_currency_and_manual_position_update_keep_native_values(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    csv = "Account,Symbol,Name,Type,Units,Cost,Value,Currency\nA-1,INFY,Infosys,Stock,10,15000,18000,INR\n"
+    broker = broker_for(sqlite_conn, csv)
+    commit_statement(sqlite_conn, request_for(sqlite_conn, broker, csv, "2026-06-30"))
+    original = list_positions(sqlite_conn)[0]
+    updated = update_position(sqlite_conn, original.id, PositionUpdate(
+        security_name=original.security_name, symbol=original.symbol, security_type=original.security_type,
+        allocation_category=original.allocation_category, sector=original.sector, exchange=original.exchange,
+        investment_country=original.investment_country, snapshot_date=original.snapshot_date, units=4,
+        per_unit_cost_basis=100, total_cost_basis=None, per_unit_fmv=None, total_fmv=900, currency="INR",
+    ))
+    assert (updated.total_cost_basis, updated.per_unit_fmv, updated.total_fmv) == (400, 225, 900)
+    assert profit_loss(sqlite_conn)[0].currency == "INR"
+
+
+def test_brokerage_cleaning_preserves_config_and_net_worth_includes_other_assets(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    broker = broker_for(sqlite_conn, CSV)
+    commit_statement(sqlite_conn, request_for(sqlite_conn, broker, CSV, "2026-06-30"))
+    create_static_account(sqlite_conn, StaticAccountCreate(category="Bank Account", entity_name="Bank", account_type="Checking", account_holder="Primary", amount=1000, currency="USD"))
+    create_real_estate_asset(sqlite_conn, RealEstateAssetCreate(property_info="Home", purchase_value=300000, current_value=350000, currency="USD"))
+    value = dashboard(sqlite_conn)
+    assert value.total_net_worth == 355250
+    clean_brokerage_data(sqlite_conn)
+    assert not list_positions(sqlite_conn)
+    assert sqlite_conn.execute("SELECT COUNT(*) FROM brokers").fetchone()[0] == 1

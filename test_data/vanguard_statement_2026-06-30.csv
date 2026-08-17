@@ -1,0 +1,10 @@
+Account Number,Symbol,Investment Name,Asset Type,Units,Cost Basis,Price,Balance,Date Acquired,Lot Number,Currency
+VG-334455667,VOO,Vanguard S&P 500 ETF,ETF,22,9900.00,546.25,12017.50,2021-09-15,1,USD
+VG-334455667,VTI,Vanguard Total Stock Market ETF,ETF,18,4300.00,303.40,5461.20,2022-02-14,1,USD
+VG-334455667,SCHB,Schwab U.S. Broad Market ETF,ETF,75,4425.00,65.80,4935.00,2023-01-09,1,USD
+VG-334455667,SCHC,Schwab International Small-Cap Equity ETF,ETF,95,3230.00,38.60,3667.00,2024-06-03,1,USD
+VG-334455667,QQQ,Invesco QQQ Trust,ETF,9,3780.00,531.40,4782.60,2023-08-18,1,USD
+VG-334455667,VBTLX,Vanguard Total Bond Market Index Admiral,Mutual Fund,140.25,14750.00,104.20,14614.05,2020-11-20,1,USD
+VG-334455667,VWIUX,Vanguard Intermediate-Term Tax-Exempt Admiral,Mutual Fund,85.50,11200.00,130.85,11189.18,2022-03-07,1,USD
+VG-334455667,BND,Vanguard Total Bond Market ETF,Bond Fund,45,3285.00,73.10,3289.50,2023-09-25,1,USD
+VG-334455667,CASH,Federal Money Market Settlement Fund,Cash,3050.00,3050.00,1.00,3050.00,,,USD
