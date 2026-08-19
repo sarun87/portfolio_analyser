@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import sqlite3
 import urllib.error
 import urllib.parse
@@ -11,6 +12,7 @@ from backend.app.services.repositories import record_price
 
 
 PROVIDER = "yahoo-chart"
+GOOGLE_PROVIDER = "google-finance-html"
 
 
 def fetch_yahoo_price(symbol: str) -> float:
@@ -39,6 +41,23 @@ def fetch_yahoo_price(symbol: str) -> float:
     return numeric_price
 
 
+def fetch_google_finance_price(symbol: str) -> float:
+    """Best-effort HTML fallback, used only after a valid Yahoo payload has no quote."""
+    url = f"https://www.google.com/finance/quote/{urllib.parse.quote(symbol)}"
+    request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0 (+local portfolio tracker)"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        html = response.read().decode("utf-8", errors="replace")
+    # Google currently marks the primary quote with this class.  Keep a
+    # conservative numeric validation rather than accepting arbitrary text.
+    match = re.search(r'class="YMlKec[^" ]*"[^>]*>\s*([0-9][0-9,]*(?:\.\d+)?)', html)
+    if not match:
+        raise ValueError("Google Finance page did not include a usable quote.")
+    price = float(match.group(1).replace(",", ""))
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("Google Finance page included an invalid price.")
+    return price
+
+
 def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefreshResult:
     row = conn.execute(
         "SELECT id, symbol, price_refresh_supported FROM securities WHERE id = ?",
@@ -55,7 +74,16 @@ def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefresh
         )
     try:
         price = fetch_yahoo_price(row["symbol"])
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        provider = PROVIDER
+    except ValueError as yahoo_exc:
+        # A parseable Yahoo response without a quote is a distinct condition;
+        # network/JSON failures do not cause a second remote request.
+        try:
+            price = fetch_google_finance_price(row["symbol"])
+            provider = GOOGLE_PROVIDER
+        except (urllib.error.URLError, TimeoutError, ValueError) as google_exc:
+            return PriceRefreshResult(security_id=security_id, symbol=row["symbol"], refreshed=False, message=f"Yahoo: {yahoo_exc} Google Finance: {google_exc}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         return PriceRefreshResult(
             security_id=security_id,
             symbol=row["symbol"],
@@ -71,7 +99,7 @@ def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefresh
             message="Quote response included an invalid price; the stored price was not changed.",
         )
 
-    record_price(conn, security_id, price, PROVIDER, date.today().isoformat())
+    record_price(conn, security_id, price, provider, date.today().isoformat())
     return PriceRefreshResult(
         security_id=security_id,
         symbol=row["symbol"],

@@ -41,8 +41,7 @@ The app is designed for sensitive financial data:
 
 - `./compress_application [--portable|--full]`
   - Creates copyable archives under `archives/`
-  - Portable mode excludes `.venv`, `node_modules`, `.git`, caches, and generated archives
-  - Includes encrypted application data if present
+  - Both modes exclude the encrypted database, unlock configuration, temporary runtime data, and generated archives
 
 ## Repository Layout
 
@@ -72,7 +71,7 @@ The app is designed for sensitive financial data:
   - `csv_importer.py`: CSV header mapping, parsing, validation, preview fingerprints
   - `import_service.py`: Persists previewed imports into normalized tables
   - `portfolio_service.py`: Positions, P/L, dashboard analytics, currency conversion
-- `price_service.py`: Yahoo-style price refresh
+- `price_service.py`: Yahoo price refresh with a validated Google Finance HTML fallback when Yahoo has no usable quote
 - `scenario_service.py`: Saved non-destructive scenarios, current/proposed comparisons, and portfolio stress tests
   - `classification_service.py`: Allocation category classification
   - `fx_service.py`: Display currency, FX rates, Frankfurter refresh, manual rates
@@ -498,3 +497,6 @@ Recommended manual flow:
 - Frankfurter rates require internet access; manual rates are available as fallback.
 - Security classification is best-effort and should not be treated as authoritative investment taxonomy.
 - Frontend is mostly in one large `App.tsx`; future growth should split it into feature components.
+# Data lifecycle updates
+
+The encrypted SQLite snapshot is upgraded on every unlock through an additive `schema_migrations` ledger. Existing unversioned snapshots are baselined without deleting holdings. Allocation categories are stored separately and seeded from existing securities, fund constituents, and allocation-policy targets. Price refreshes use Yahoo chart data first and may use a validated Google Finance HTML quote only when Yahoo returned a structurally valid response with no usable quote. Both portable and full archives exclude encrypted database, authentication, and temporary runtime data.

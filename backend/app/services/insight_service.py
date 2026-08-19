@@ -165,11 +165,19 @@ def insights(conn: sqlite3.Connection) -> Insights:
     dimensions = {"asset_category": lambda p: p.allocation_category, "country": lambda p: p.investment_country, "currency": lambda p: p.currency}
     for dimension, key in dimensions.items():
         actual = _totals(values, key)
+        allocation_total = total
+        if dimension == "asset_category":
+            static_allocation = conn.execute("SELECT category, currency, amount FROM static_accounts WHERE category IN ('Bank Account','Retirement Account')").fetchall()
+            for item in static_allocation:
+                amount = convert_amount(conn, item["amount"], item["currency"], display) or 0
+                label = "Cash" if item["category"] == "Bank Account" else "Retirement"
+                actual[label] = actual.get(label, 0) + amount
+                allocation_total += amount
         targets = list_targets(conn, dimension)
         rows = []
         for target in targets:
             actual_amount = actual.get(target.label, 0)
-            actual_percent = actual_amount / total * 100 if total else 0
+            actual_percent = actual_amount / allocation_total * 100 if allocation_total else 0
             minimum = max(0, target.target_percent - target.tolerance_percent)
             maximum = min(100, target.target_percent + target.tolerance_percent)
             outside = minimum - actual_percent if actual_percent < minimum else actual_percent - maximum if actual_percent > maximum else 0
@@ -178,8 +186,8 @@ def insights(conn: sqlite3.Connection) -> Insights:
                 target_percent=target.target_percent, tolerance_percent=target.tolerance_percent,
                 minimum_percent=minimum, maximum_percent=maximum,
                 drift_percent=actual_percent - target.target_percent,
-                rebalance_amount=total * target.target_percent / 100 - actual_amount,
-                compliant=outside == 0, outside_range_percent=outside, policy_gap_amount=total * outside / 100,
+                rebalance_amount=allocation_total * target.target_percent / 100 - actual_amount,
+                compliant=outside == 0, outside_range_percent=outside, policy_gap_amount=allocation_total * outside / 100,
             ))
         drifts[dimension] = rows
     cash_brokerage = sum(v for p, v in values if p.security_type.lower() == "cash")
@@ -235,7 +243,8 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
                     impact_amount=excess, impact_percent=share, impact_label="Value above 20% threshold", impact_percent_label="Portfolio share", confidence="high",
                     evidence=[f"Current value: {largest.value:,.2f} {display}", f"Portfolio value: {total:,.2f} {display}", "Review threshold: 20%"],
                     explanation="A single holding can dominate portfolio outcomes even when the rest of the portfolio is diversified.",
-                    suggested_actions=["Review whether this concentration is intentional.", "Consider directing future contributions toward underweight allocations before considering sales."]
+                    suggested_actions=["Review whether this concentration is intentional.", "Consider directing future contributions toward underweight allocations before considering sales."],
+                    navigation={"page": "positions", "filters": {"security_name": largest.label}}
                 ))
     for dimension, rows in drifts.items():
         for row in rows:
@@ -248,7 +257,8 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
                     impact_amount=row.policy_gap_amount, impact_percent=row.outside_range_percent, impact_label="Approximate value outside policy range", impact_percent_label="Percentage points outside range", confidence="high",
                     evidence=[f"Actual: {row.actual_percent:.1f}%", f"Target: {row.target_percent:.1f}% ± {row.tolerance_percent:.1f} points", f"Allowed range: {row.minimum_percent:.1f}%–{row.maximum_percent:.1f}%", f"Approximate gap: {row.policy_gap_amount:,.2f} {display}"],
                     explanation="The current allocation is outside the range set by the household allocation policy.",
-                    suggested_actions=["Review the target and confirm it still reflects your plan.", "Use available cash or new contributions to address underweights before evaluating sales."]
+                    suggested_actions=["Review the target and confirm it still reflects your plan.", "Use available cash or new contributions to address underweights before evaluating sales."],
+                    navigation={"page": "settings", "section": "allocation_policy", "dimension": dimension, "label": row.label}
                 ))
     cash_positions = sum((p.total_fmv_display or 0) for p in positions if p.security_type.lower() == "cash")
     if total and cash_positions / total >= .20:
@@ -258,7 +268,8 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
             impact_amount=cash_positions, impact_percent=share, impact_label="Brokerage cash", impact_percent_label="Portfolio share", confidence="high",
             evidence=[f"Brokerage cash: {cash_positions:,.2f} {display}", f"Invested-asset base: {total:,.2f} {display}"],
             explanation="Cash can reduce volatility and fund near-term needs, but persistent excess cash may also reduce expected long-term growth.",
-            suggested_actions=["Confirm how much cash is reserved for near-term spending.", "Review whether remaining cash should be assigned to a goal or allocation target."]
+            suggested_actions=["Confirm how much cash is reserved for near-term spending.", "Review whether remaining cash should be assigned to a goal or allocation target."],
+            navigation={"page": "positions", "filters": {"security_type": "Cash"}}
         ))
     base_currency = get_setting(conn, "decision_coach_base_currency")
     if not base_currency:
@@ -276,7 +287,8 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
             impact_percent=share, impact_label=f"{foreign_currency}-denominated value", impact_percent_label="Portfolio share", confidence="medium",
             evidence=[f"Decision-coach base currency: {base_currency}", f"{foreign_currency}-denominated value: {foreign_value:,.2f} {display}", f"Portfolio share: {share:.1f}%"],
             explanation="Exchange-rate moves can materially change values in the display currency. Denomination is only a proxy and does not capture underlying company or fund exposures.",
-            suggested_actions=["Check whether this currency exposure aligns with future spending and goals.", "Review underlying fund and company exposures before drawing a hedging conclusion."]
+            suggested_actions=["Check whether this currency exposure aligns with future spending and goals.", "Review underlying fund and company exposures before drawing a hedging conclusion."],
+            navigation={"page": "positions", "filters": {"currency": foreign_currency}}
         ))
     if runway is not None and runway < 3:
         findings.append(InsightFinding(
@@ -295,7 +307,11 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
             impact_amount=affected, impact_percent=affected / total * 100 if total else None, impact_label="Value with incomplete metadata", impact_percent_label="Portfolio share", confidence="high",
             evidence=[f"Unclassified positions: {len(unclassified)}", f"Unresolved location positions: {len(unresolved)}", f"Affected value: {affected:,.2f} {display}"],
             explanation="Incomplete metadata makes allocation, geography, and currency conclusions less reliable.",
-            suggested_actions=["Review unresolved securities in Positions.", "Refresh or manually complete security classifications."]
+            suggested_actions=["Review unresolved securities in Positions.", "Refresh or manually complete security classifications."],
+            navigation={"page": "positions", "filters": {"any_of": [{"allocation_category": "Unclassified"}, {"exchange": "Unresolved"}, {"investment_country": "Unresolved"}]}, "actions": [
+                {"label": f"Unclassified positions: {len(unclassified)}", "filters": {"allocation_category": "Unclassified"}},
+                {"label": f"Unresolved location positions: {len(unresolved)}", "filters": {"any_of": [{"exchange": "Unresolved"}, {"investment_country": "Unresolved"}]}},
+            ]}
         ))
     if positions:
         account_dates = {}

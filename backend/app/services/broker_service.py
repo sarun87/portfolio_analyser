@@ -8,13 +8,13 @@ from backend.app.services.models import BrokerConfigPreview, BrokerDraft
 from backend.app.services.repositories import get_broker
 
 
-def _validate(draft: BrokerDraft) -> list[str]:
+def _validate(draft: BrokerDraft, require_import_mapping: bool = True) -> list[str]:
     errors = []
     if not draft.name.strip(): errors.append("Broker name is required.")
     if draft.default_currency.upper() not in {"USD", "INR", "GBP", "EUR"}: errors.append("Unsupported default currency.")
     if set(draft.locked_fields) - LOCKABLE_FIELDS: errors.append("Locked fields contain unsupported values.")
-    if not draft.header_signature: errors.append("A CSV header signature is required.")
-    if not draft.mappings.get("symbol") or not draft.mappings.get("units"): errors.append("Symbol and units mappings are required.")
+    if require_import_mapping and not draft.header_signature: errors.append("A CSV header signature is required.")
+    if require_import_mapping and (not draft.mappings.get("symbol") or not draft.mappings.get("units")): errors.append("Symbol and units mappings are required.")
     if set(draft.mappings) - set(CANONICAL_FIELDS): errors.append("Mappings contain unknown fields.")
     return errors
 
@@ -31,9 +31,10 @@ def preview_broker_configuration(conn: sqlite3.Connection, draft: BrokerDraft, c
 
 
 def save_broker(conn: sqlite3.Connection, draft: BrokerDraft, preview: BrokerConfigPreview | None, broker_id: int | None = None) -> dict:
-    if broker_id is None and (not preview or not preview.valid): raise ValueError("A valid configuration preview with at least one security row is required.")
     effective = draft.model_copy(update={"header_signature": preview.header_signature, "mappings": preview.mappings}) if preview else draft
-    errors = _validate(effective)
+    # A broker can be intentionally saved as an incomplete draft. Import
+    # preview/commit are the strict boundary for required mappings.
+    errors = _validate(effective, require_import_mapping=False)
     if errors: raise ValueError(" ".join(errors))
     values = (effective.name.strip(), effective.default_currency.upper(), effective.notes, json.dumps(sorted(set(effective.locked_fields))), json.dumps(effective.header_signature), json.dumps(effective.mappings))
     if broker_id is None:

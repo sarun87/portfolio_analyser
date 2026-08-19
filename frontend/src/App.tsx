@@ -28,7 +28,7 @@ import {
   Unlock,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -65,7 +65,7 @@ import type {
   AllocationTarget,
   GoalPayload,
   GoalsSummary,
-  Insights
+  Insights, InsightFinding
   , SavedScenario, ScenarioInput, ScenarioAnalysis, StressTestInput, StressTestResult,
   ExposureAnalysis, FundCompositionInput, FundConstituent, PublicMetadataPreview, FundMetadata, PeerResearch,
   RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput
@@ -106,7 +106,7 @@ const navItems: Array<{ view: View; label: string; icon: typeof Table2 }> = [
 const colors = ["#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2", "#4b5563"];
 const supportedCurrencies = ["USD", "INR", "GBP", "EUR"];
 const securityTypes = ["Stock", "ETF", "Mutual Fund", "Bond", "Bond Fund", "Cash", "Other"];
-const allocationCategories = ["Large Cap", "Mid Cap", "Small Cap", "Hybrid Fund", "Bonds", "International", "Cash", "Unclassified", "Other"];
+const fallbackAllocationCategories = ["Large Cap", "Mid Cap", "Small Cap", "Hybrid Fund", "Bonds", "International", "Cash", "Unclassified", "Other"];
 const sectors = ["Communication Services", "Consumer Discretionary", "Consumer Staples", "Energy", "Financials", "Health Care", "Industrials", "Information Technology", "Materials", "Real Estate", "Utilities", "Diversified", "Unclassified"];
 
 type PositionColumn = "broker" | "account" | "security" | "type" | "allocation" | "sector" | "country" | "exchange" | "snapshot" | "acquired" | "lot" | "units" | "cost_basis" | "fmv" | "currency";
@@ -124,6 +124,7 @@ function WorkspaceTabs({ tabs, active, onChange }: { tabs: Array<{ id: string; l
   return <div className="settingsTabs workspaceTabs" role="tablist">{tabs.map(tab => <button key={tab.id} role="tab" aria-selected={active === tab.id} className={active === tab.id ? "active" : "secondary"} onClick={() => onChange(tab.id)}>{tab.label}</button>)}</div>;
 }
 const positionColumnsStorageKey = "portfolio-position-columns";
+type PositionFilters = Record<string, unknown>;
 
 function storedPositionColumns(): PositionColumn[] {
   try {
@@ -195,6 +196,7 @@ export function App() {
   const [goals, setGoals] = useState<GoalsSummary | null>(null);
   const [assumptions, setAssumptions] = useState<FinancialAssumptions | null>(null);
   const [allocationTargets, setAllocationTargets] = useState<AllocationTarget[]>([]);
+  const [allocationCategoryOptions, setAllocationCategoryOptions] = useState<string[]>(fallbackAllocationCategories);
   const [scenarios, setScenarios] = useState<SavedScenario[]>([]);
   const [view, setView] = useState<View>("overview");
   const [assetSection, setAssetSection] = useState<"banking" | "real-estate" | "private-equity">("banking");
@@ -202,6 +204,7 @@ export function App() {
   const [analyticsSection, setAnalyticsSection] = useState<"insights" | "exposure" | "value-metrics" | "risk" | "scenario-lab">("insights");
   const [planningSection, setPlanningSection] = useState<"goals">("goals");
   const [positionFilter, setPositionFilter] = useState("");
+  const [positionStructuredFilter, setPositionStructuredFilter] = useState<PositionFilters>({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -209,21 +212,34 @@ export function App() {
     return stored === "dark" ? "dark" : "light";
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const [settingsInitialPage, setSettingsInitialPage] = useState<"general" | "projections">("general");
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
     const dismiss = (event: KeyboardEvent) => { if (event.key === "Escape") setMobileMenuOpen(false); };
     document.body.classList.add("drawerOpen");
     window.addEventListener("keydown", dismiss);
-    return () => { document.body.classList.remove("drawerOpen"); window.removeEventListener("keydown", dismiss); };
+    drawerRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => { document.body.classList.remove("drawerOpen"); window.removeEventListener("keydown", dismiss); menuTriggerRef.current?.focus(); };
   }, [mobileMenuOpen]);
+
+  function trapDrawerFocus(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled])'));
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
 
   async function loadAuth() {
     setAuth(await api.authStatus());
   }
 
   async function loadData() {
-    const [brokerRows, positionRows, plRows, dashboard, currencySetting, rates, accountRows, realEstateRows, privateEquityRows, goalRows, assumptionRows, targetRows, scenarioRows] = await Promise.all([
+    const [brokerRows, positionRows, plRows, dashboard, currencySetting, rates, accountRows, realEstateRows, privateEquityRows, goalRows, assumptionRows, targetRows, scenarioRows, categoryRows] = await Promise.all([
       api.brokers(),
       api.positions(),
       api.profitLoss(),
@@ -231,7 +247,7 @@ export function App() {
       api.currency(),
       api.fxRates(),
       api.staticAccounts(),
-      api.realEstate(), api.privateEquity(), api.goals(), api.assumptions(), api.allocationTargets(), api.scenarios()
+      api.realEstate(), api.privateEquity(), api.goals(), api.assumptions(), api.allocationTargets(), api.scenarios(), api.allocationCategories()
     ]);
     setBrokers(brokerRows);
     setPositions(positionRows);
@@ -244,6 +260,7 @@ export function App() {
     setPrivateEquity(privateEquityRows);
     setGoals(goalRows); setAssumptions(assumptionRows); setAllocationTargets(targetRows);
     setScenarios(scenarioRows);
+    setAllocationCategoryOptions(categoryRows);
   }
 
   useEffect(() => {
@@ -336,7 +353,7 @@ export function App() {
         </nav>
       </aside>
 
-      {mobileMenuOpen && <div className="mobileDrawerBackdrop" onClick={() => setMobileMenuOpen(false)}><aside className="mobileDrawer" onClick={event => event.stopPropagation()} aria-label="Main navigation"><div className="panelHeader"><strong>Navigate</strong><button className="iconOnly" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)}><X size={18}/></button></div>{navItems.map(item => { const Icon = item.icon; return <button className={view === item.view ? "active" : ""} key={item.view} onClick={() => { setView(item.view); setMobileMenuOpen(false); }}><Icon size={18}/>{item.label}</button>; })}</aside></div>}
+      {mobileMenuOpen && <div className="mobileDrawerBackdrop" onClick={() => setMobileMenuOpen(false)}><aside ref={drawerRef} className="mobileDrawer" role="dialog" aria-modal="true" aria-label="Main navigation" onKeyDown={trapDrawerFocus} onClick={event => event.stopPropagation()}><div className="panelHeader"><strong>Navigate</strong><button className="iconOnly" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)}><X size={18}/></button></div>{navItems.map(item => { const Icon = item.icon; return <button className={view === item.view ? "active" : ""} key={item.view} onClick={() => { setView(item.view); setMobileMenuOpen(false); }}><Icon size={18}/>{item.label}</button>; })}</aside></div>}
 
       <main className="content">
         <header className="topbar">
@@ -345,7 +362,7 @@ export function App() {
             <h1>{navItems.find((item) => item.view === view)?.label}</h1>
           </div>
           <div className="actions">
-            <button className="mobileMenuButton iconOnly" aria-label="Open menu" onClick={() => setMobileMenuOpen(true)}><Menu size={19}/></button>
+            <button ref={menuTriggerRef} className="mobileMenuButton iconOnly" aria-label="Open menu" onClick={() => setMobileMenuOpen(true)}><Menu size={19}/></button>
             {currency && (
               <label className="topbarSelect" title="Display currency">
                 <span>Currency</span>
@@ -400,10 +417,11 @@ export function App() {
         {view === "portfolio" && <WorkspaceTabs tabs={[{id:"positions",label:"Positions"},{id:"profit-loss",label:"Profit/Loss"},{id:"allocation",label:"Allocation"},{id:"growth",label:"Growth"}]} active={portfolioSection} onChange={id => setPortfolioSection(id as typeof portfolioSection)} />}
         {view === "portfolio" && portfolioSection === "profit-loss" && <ProfitLossTable positions={profitLoss} />}
         {view === "portfolio" && portfolioSection === "growth" && analytics && <GrowthView analytics={analytics} />}
-        {view === "portfolio" && portfolioSection === "positions" && <PositionsTable positions={positions} brokers={brokers} onRefresh={loadData} externalFilter={positionFilter} onExternalFilterChange={setPositionFilter} />}
+        {view === "portfolio" && portfolioSection === "positions" && <PositionsTable positions={positions} brokers={brokers} categories={allocationCategoryOptions} onRefresh={loadData} externalFilter={positionFilter} structuredFilter={positionStructuredFilter} onExternalFilterChange={setPositionFilter} onStructuredFilterChange={setPositionStructuredFilter} />}
         {view === "portfolio" && portfolioSection === "allocation" && analytics && (
           <AllocationView
             analytics={analytics}
+            targets={allocationTargets}
             onAllocationClick={(label) => {
               setPositionFilter(label);
               setView("portfolio");
@@ -416,7 +434,7 @@ export function App() {
           />
         )}
         {view === "analytics" && <WorkspaceTabs tabs={[{id:"insights",label:"Insights"},{id:"exposure",label:"Exposure"},{id:"value-metrics",label:"Value metrics"},{id:"risk",label:"Risk"},{id:"scenario-lab",label:"Scenario Lab"}]} active={analyticsSection} onChange={id => setAnalyticsSection(id as typeof analyticsSection)} />}
-        {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} />}
+        {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} onNavigate={navigation => { if (navigation.page === "positions") { setPositionFilter(""); setPositionStructuredFilter(navigation.filters || {}); setView("portfolio"); setPortfolioSection("positions"); } else if (navigation.page === "settings") { setSettingsInitialPage(navigation.section === "allocation_policy" ? "projections" : "general"); setView("settings"); } }} />}
         {view === "analytics" && analyticsSection === "exposure" && <ExposurePage positions={positions} insights={insights} />}
         {view === "analytics" && analyticsSection === "value-metrics" && insights && <ValueMetricsPage insights={insights} />}
         {view === "analytics" && analyticsSection === "risk" && currency && <RiskPage positions={positions} currency={currency.display_currency} />}
@@ -458,12 +476,15 @@ export function App() {
         )}
         {view === "settings" && (
           <Settings
+            key={settingsInitialPage}
             auth={auth}
             positionCount={positions.length}
             currency={currency}
             fxRates={fxRates}
             assumptions={assumptions}
             allocationTargets={allocationTargets}
+            categories={allocationCategoryOptions}
+            initialPage={settingsInitialPage}
             brokers={brokers}
             positions={positions}
             onSettingsChanged={loadData}
@@ -586,7 +607,7 @@ function ChartPanel({ title, children }: { title: string; children: React.ReactN
   return (
     <section className="panel">
       <h2>{title}</h2>
-      {children}
+      <OnDemandChart>{children}</OnDemandChart>
     </section>
   );
 }
@@ -717,15 +738,21 @@ function optionsWithCurrent(options: string[], current: string) {
 function PositionsTable({
   positions,
   brokers,
+  categories,
   onRefresh,
   externalFilter,
+  structuredFilter,
+  onStructuredFilterChange,
   onExternalFilterChange
 }: {
   positions: Position[];
   brokers: Broker[];
+  categories: string[];
   onRefresh: () => Promise<void>;
   externalFilter: string;
+  structuredFilter: PositionFilters;
   onExternalFilterChange: (value: string) => void;
+  onStructuredFilterChange: (value: PositionFilters) => void;
 }) {
   const [query, setQuery] = useState(externalFilter);
   const [refreshing, setRefreshing] = useState<number | null>(null);
@@ -759,6 +786,10 @@ function PositionsTable({
 
   const filtered = useMemo(() => {
     const needle = query.toLowerCase();
+    const matches = (position: Position, filters: PositionFilters): boolean => Object.entries(filters).every(([key, expected]) => {
+      if (key === "any_of" && Array.isArray(expected)) return expected.some(item => matches(position, item as PositionFilters));
+      return String(position[key as keyof Position] ?? "").toLowerCase() === String(expected ?? "").toLowerCase();
+    });
     const rows = positions.filter((position) =>
       [
         position.broker_name,
@@ -771,7 +802,7 @@ function PositionsTable({
         position.investment_country
       ]
         .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(needle))
+        .some((value) => String(value).toLowerCase().includes(needle)) && matches(position, structuredFilter)
     );
     return [...rows].sort((left, right) => {
       const leftValue = sort.key === "security" ? left.symbol || left.security_name : left[sort.key as keyof Position];
@@ -779,7 +810,7 @@ function PositionsTable({
       const result = compareValues(leftValue, rightValue);
       return sort.direction === "asc" ? result : -result;
     });
-  }, [positions, query, sort]);
+  }, [positions, query, sort, structuredFilter]);
 
   async function refresh(position: Position) {
     setRefreshing(position.security_id);
@@ -793,6 +824,14 @@ function PositionsTable({
     } finally {
       setRefreshing(null);
     }
+  }
+
+  async function remove(position: Position) {
+    if (!confirm(`Delete ${position.symbol || position.security_name} from every stored snapshot for this account and lot? This cannot be undone.`)) return;
+    setRefreshing(position.security_id);
+    try { await api.deletePosition(position.id); await onRefresh(); }
+    catch (error) { setEditError(error instanceof Error ? error.message : "Could not delete position."); }
+    finally { setRefreshing(null); }
   }
 
   function canRefreshPrice(position: Position) {
@@ -966,7 +1005,7 @@ function PositionsTable({
             <label>Symbol<input value={manualDraft.symbol} onChange={(event) => updateManualDraft({ symbol: event.target.value })} /></label>
             <label>Security name<input value={manualDraft.security_name} onChange={(event) => updateManualDraft({ security_name: event.target.value })} /></label>
             <label>Security type<select value={manualDraft.security_type} onChange={(event) => updateManualDraft({ security_type: event.target.value })}>{securityTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
-            <label>Allocation<select value={manualDraft.allocation_category} onChange={(event) => updateManualDraft({ allocation_category: event.target.value })}>{allocationCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+            <label>Allocation<select value={manualDraft.allocation_category} onChange={(event) => updateManualDraft({ allocation_category: event.target.value })}>{optionsWithCurrent(categories, manualDraft.allocation_category).map((category) => <option key={category}>{category}</option>)}</select></label>
             <label>Sector<select value={manualDraft.sector} onChange={(event) => updateManualDraft({ sector: event.target.value })}>{sectors.map((sector) => <option key={sector}>{sector}</option>)}</select></label>
             <label>Units<input type="number" min="0" step="0.0001" value={manualDraft.units} onChange={(event) => updateManualDraft({ units: event.target.value })} /></label>
             <label>Cost per unit<input type="number" min="0" step="0.0001" value={manualDraft.per_unit_cost_basis} onChange={(event) => updateManualDraft({ per_unit_cost_basis: event.target.value, total_cost_basis: "" })} /></label>
@@ -1044,7 +1083,7 @@ function PositionsTable({
                   {columnVisible("allocation") && <td>
                     {editMode ? (
                       <select className={inputClass(position, "allocation_category")} value={draft.allocation_category} onChange={(event) => updateDraft(position, { allocation_category: event.target.value })}>
-                        {optionsWithCurrent(allocationCategories, draft.allocation_category).map((category) => (
+                        {optionsWithCurrent(categories, draft.allocation_category).map((category) => (
                           <option key={category} value={category}>{category}</option>
                         ))}
                       </select>
@@ -1107,11 +1146,8 @@ function PositionsTable({
                           <X size={15} />
                         </button>
                       </div>
-                    ) : (
-                      <button className="iconOnly" title={canRefreshPrice(position) ? "Refresh security price" : "No market-price refresh for this security"} disabled={refreshing === position.security_id || !canRefreshPrice(position)} onClick={() => refresh(position)}>
-                        <RefreshCw size={15} />
-                      </button>
-                    )}
+                    ) : <><button className="iconOnly" title={canRefreshPrice(position) ? "Refresh security price" : "No market-price refresh for this security"} disabled={refreshing === position.security_id || !canRefreshPrice(position)} onClick={() => refresh(position)}><RefreshCw size={15} /></button>
+                      <button className="iconOnly" title="Delete holding history" disabled={refreshing === position.security_id} onClick={() => remove(position)}><Trash2 size={15} /></button></>}
                   </td>
                 </tr>
               );
@@ -1119,7 +1155,8 @@ function PositionsTable({
           </tbody>
         </table>
       </div>
-      {!editMode && <div className="mobilePositionCards">{filtered.map(position => <MobilePositionCard key={position.id} position={position} refreshing={refreshing === position.security_id} canRefresh={canRefreshPrice(position)} onRefresh={() => refresh(position)} />)}</div>}
+      {Object.keys(structuredFilter).length > 0 && <div className="notice">Structured filter active. <button className="secondary" onClick={() => onStructuredFilterChange({})}>Clear filter</button></div>}
+      {!editMode && <div className="mobilePositionCards">{filtered.map(position => <MobilePositionCard key={position.id} position={position} moneyMode={moneyMode} refreshing={refreshing === position.security_id} canRefresh={canRefreshPrice(position)} onRefresh={() => refresh(position)} onDelete={() => remove(position)} />)}</div>}
       {showExitPrompt && (
         <div className="modalBackdrop" role="presentation">
           <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="save-edits-title">
@@ -1161,17 +1198,18 @@ function SortableTh<T>({
   );
 }
 
-export function MobilePositionCard({ position, refreshing, canRefresh, onRefresh }: { position: Position; refreshing?: boolean; canRefresh?: boolean; onRefresh?: () => void }) {
+export function MobilePositionCard({ position, moneyMode = "total", refreshing, canRefresh, onRefresh, onDelete }: { position: Position; moneyMode?: "total" | "per-unit"; refreshing?: boolean; canRefresh?: boolean; onRefresh?: () => void; onDelete?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const toggle = () => setExpanded(current => !current);
   const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
   };
   const isProfitLoss = !onRefresh;
+  const cost = moneyMode === "total" ? position.total_cost_basis : position.per_unit_cost_basis; const value = moneyMode === "total" ? position.total_fmv : position.per_unit_fmv;
   return <article className="mobileDataCard" role="button" tabIndex={0} aria-expanded={expanded} aria-label={`${position.symbol || position.security_name} details`} onClick={toggle} onKeyDown={onKeyDown}>
-    <div className="mobileCardSummary"><strong onClick={event => event.stopPropagation()}><SymbolLink position={position}/></strong><strong className={isProfitLoss ? ((position.unrealized_gain_loss_native || 0) >= 0 ? "good" : "bad") : ""}>{isProfitLoss ? money(position.unrealized_gain_loss_native, position.currency) : money(position.total_fmv, position.currency)}</strong></div>
+    <div className="mobileCardSummary"><strong onClick={event => event.stopPropagation()}><SymbolLink position={position}/></strong><strong className={isProfitLoss ? ((position.unrealized_gain_loss_native || 0) >= 0 ? "good" : "bad") : ""}>{isProfitLoss ? money(position.unrealized_gain_loss_native, position.currency) : money(value, position.currency)}</strong></div>
     <small>{isProfitLoss ? `${pct(position.unrealized_gain_loss_pct)} · ${position.broker_name}` : `${position.broker_name} · ${position.account_mask} · ${number(position.units)} units`}</small>
-    {expanded && <div className="mobileCardDetails"><dl>{isProfitLoss ? <><div><dt>Cost basis</dt><dd>{money(position.total_cost_basis, position.currency)}</dd></div><div><dt>Market value</dt><dd>{money(position.total_fmv, position.currency)}</dd></div><div><dt>Account</dt><dd>{position.account_mask}</dd></div></> : <><div><dt>Cost basis</dt><dd>{money(position.total_cost_basis, position.currency)}</dd></div><div><dt>Allocation</dt><dd>{position.allocation_category}</dd></div><div><dt>Snapshot</dt><dd>{position.snapshot_date}</dd></div></>}<div><dt>Lot</dt><dd>{position.lot_number || "-"}</dd></div></dl>{onRefresh && <button className="secondary" title={canRefresh ? "Refresh security price" : "No market-price refresh for this security"} disabled={refreshing || !canRefresh} onClick={event => { event.stopPropagation(); onRefresh(); }}><RefreshCw size={15}/>Refresh price</button>}</div>}
+    {expanded && <div className="mobileCardDetails"><dl>{isProfitLoss ? <><div><dt>Cost basis</dt><dd>{money(position.total_cost_basis, position.currency)}</dd></div><div><dt>Market value</dt><dd>{money(position.total_fmv, position.currency)}</dd></div><div><dt>Account</dt><dd>{position.account_mask}</dd></div></> : <><div><dt>{moneyMode === "total" ? "Cost basis" : "Cost / unit"}</dt><dd>{money(cost, position.currency)}</dd></div><div><dt>{moneyMode === "total" ? "Market value" : "Value / unit"}</dt><dd>{money(value, position.currency)}</dd></div><div><dt>Allocation</dt><dd>{position.allocation_category}</dd></div><div><dt>Snapshot</dt><dd>{position.snapshot_date}</dd></div></>}<div><dt>Lot</dt><dd>{position.lot_number || "-"}</dd></div></dl>{onRefresh && <button className="secondary" title={canRefresh ? "Refresh security price" : "No market-price refresh for this security"} disabled={refreshing || !canRefresh} onClick={event => { event.stopPropagation(); onRefresh(); }}><RefreshCw size={15}/>Refresh price</button>}{onDelete && <button className="secondary" onClick={event => { event.stopPropagation(); onDelete(); }}><Trash2 size={15}/>Delete history</button>}</div>}
   </article>;
 }
 
@@ -1232,7 +1270,7 @@ function ProfitLossTable({ positions }: { positions: Position[] }) {
 
 function GrowthView({ analytics }: { analytics: DashboardAnalytics }) {
   return (
-    <section className="panel tall">
+    <section className="stack"><section className="panel tall">
       <h2>Portfolio Growth</h2>
       <ResponsiveContainer width="100%" height={420}>
         <AreaChart data={analytics.portfolio_growth}>
@@ -1243,20 +1281,25 @@ function GrowthView({ analytics }: { analytics: DashboardAnalytics }) {
           <Area type="monotone" dataKey="value" stroke="#2563eb" fill="#bfdbfe" />
         </AreaChart>
       </ResponsiveContainer>
-    </section>
+    </section>{analytics.country_returns.length > 0 && <section className="panel"><h2>Country returns</h2><p className="disclosure">{analytics.country_snapshot_disclosure}</p><div className="tableWrap"><table><thead><tr><th>Country</th><th>Current value</th><th>Cost basis</th><th>Unrealized return</th><th>Earliest snapshot</th><th>Latest snapshot</th><th>Value-change proxy</th></tr></thead><tbody>{analytics.country_returns.map(row=>{const tone=row.unrealized_return>=0?"good":"bad";return <tr key={row.country}><td>{row.country}</td><td>{money(row.current_market_value,analytics.display_currency)}</td><td>{money(row.cost_basis,analytics.display_currency)}</td><td className={`countryReturn ${tone}`}><strong>{money(row.unrealized_return,analytics.display_currency)}</strong><br/><b>{pct(row.unrealized_return_percent)}</b></td><td>{money(row.earliest_snapshot_value,analytics.display_currency)}</td><td>{money(row.latest_snapshot_value,analytics.display_currency)}</td><td>{pct(row.snapshot_value_change_percent)}</td></tr>})}</tbody></table></div></section>}</section>
   );
 }
 
 function AllocationView({
   analytics,
+  targets,
   onClassified,
   onAllocationClick
 }: {
   analytics: DashboardAnalytics;
+  targets: AllocationTarget[];
   onClassified: (message: string) => Promise<void>;
   onAllocationClick: (label: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const assetTargets = targets.filter(target => target.dimension === "asset_category");
+  const allocationTotal = analytics.asset_allocation.reduce((sum, item) => sum + item.value, 0);
+  const desired = assetTargets.map(target => ({label: target.label, value: allocationTotal * target.target_percent / 100}));
 
   async function refreshClassifications() {
     setBusy(true);
@@ -1284,8 +1327,11 @@ function AllocationView({
         </button>
       </div>
       <div className="chartGrid">
-        <ChartPanel title="Asset Allocation">
+        <ChartPanel title="Actual Asset Allocation">
           <AllocationPie data={analytics.asset_allocation} currency={analytics.display_currency} onSliceClick={onAllocationClick} />
+        </ChartPanel>
+        <ChartPanel title="Desired Asset Allocation">
+          {desired.length ? <AllocationPie data={desired} currency={analytics.display_currency} /> : <p className="disclosure">Set asset-category targets in Settings to compare desired allocation.</p>}
         </ChartPanel>
         <ChartPanel title="Broker Allocation">
           <ResponsiveContainer width="100%" height={300}>
@@ -1489,7 +1535,7 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
             </div>
           )}
           <div className="notice">Column mappings are saved with this broker. Edit them in Settings → Brokers, then refresh this preview.</div>
-          {visibleInvalidRows.length > 0 && <div className="stack"><div className="errorList">{visibleInvalidRows.length} row{visibleInvalidRows.length === 1 ? "" : "s"} need attention. Correct the values below or ignore them.</div><div className="tableWrap"><table><thead><tr><th>CSV row</th><th>Issues</th><th>Symbol</th><th>Units</th><th>Cost / Unit</th><th>Total Cost</th><th></th></tr></thead><tbody>{visibleInvalidRows.map(row => <tr key={row.row_number}><td>{row.row_number}</td><td>{Object.entries(row.field_errors).map(([field, issues]) => <div key={field}>{fieldLabels[field] || field}: {issues.join(" ")}</div>)}</td>{["symbol", "units", "per_unit_cost_basis", "total_cost_basis"].map(field => <td key={field}>{(field in row.editable_values || field in row.raw_values) ? <input value={rowOverrides[row.row_number]?.[field] ?? row.editable_values[field] ?? ""} onChange={e => setRowOverrides(current => ({...current, [row.row_number]: {...current[row.row_number], [field]: e.target.value}}))}/> : "—"}</td>)}<td><button className="secondary" onClick={() => { setRowOverrides(current => { const next = {...current}; delete next[row.row_number]; return next; }); setIgnoredRowNumbers(current => current.includes(row.row_number) ? current : [...current, row.row_number]); }}>Ignore row</button></td></tr>)}</tbody></table></div></div>}
+          {visibleInvalidRows.length > 0 && <div className="stack"><div className="errorList">{visibleInvalidRows.length} row{visibleInvalidRows.length === 1 ? "" : "s"} need attention. Correct the values below or ignore them.</div>{visibleInvalidRows.map(row => <section className="panel" key={row.row_number}><h3>CSV row {row.row_number}</h3><code>{row.csv_record}</code><div className="errorList">{Object.entries(row.field_errors).map(([field, issues]) => <div key={field}>{fieldLabels[field] || field}: {issues.join(" ")}</div>)}</div><div className="formGrid">{Object.keys(row.editable_values).map(field => <label key={field}>{fieldLabels[field] || field}<input value={rowOverrides[row.row_number]?.[field] ?? row.editable_values[field] ?? ""} onChange={e => setRowOverrides(current => ({...current, [row.row_number]: {...current[row.row_number], [field]: e.target.value}}))}/></label>)}</div><button className="secondary" onClick={() => { setRowOverrides(current => { const next = {...current}; delete next[row.row_number]; return next; }); setIgnoredRowNumbers(current => current.includes(row.row_number) ? current : [...current, row.row_number]); }}>Ignore row</button></section>)}</div>}
           {visibleIgnoredRows.length > 0 && <div className="stack"><h3>Ignored rows</h3><div className="tableWrap"><table><thead><tr><th>CSV row</th><th>Raw values</th><th></th></tr></thead><tbody>{visibleIgnoredRows.map(row => <tr key={row.row_number}><td>{row.row_number}</td><td>{Object.entries(row.raw_values).map(([field, value]) => <div key={field}>{fieldLabels[field] || field}: {value || "—"}</div>)}</td><td><button className="secondary" onClick={() => setIgnoredRowNumbers(current => current.filter(number => number !== row.row_number))}>Restore to repair</button></td></tr>)}</tbody></table></div></div>}
           {((preview.new_rows || []).length > 0 || (preview.modified_rows || []).length > 0 || (preview.deleted_rows || []).length > 0) && <div className="stack"><h3>Import changes</h3>{(preview.new_rows || []).length > 0 && <div className="tableWrap"><h4>New securities</h4><table><tbody>{preview.new_rows.map(row => <tr key={row.row_number}><td>{row.symbol}</td><td>{row.security_name}</td><td>{row.units}</td></tr>)}</tbody></table></div>}{(preview.modified_rows || []).length > 0 && <div className="tableWrap"><h4>Modified securities</h4><table><tbody>{preview.modified_rows.map(row => <tr key={row.row_number}>{row.changed_fields.map(field => <td key={field}><strong>{fieldLabels[field] || field}</strong><br/><s>{String(row.current_values[field] ?? "—")}</s> → <mark>{String(row.proposed_values[field] ?? "—")}</mark></td>)}</tr>)}</tbody></table></div>}{(preview.deleted_rows || []).length > 0 && <div className="tableWrap"><h4>Deleted securities</h4><table><tbody>{preview.deleted_rows.map((row,index) => <tr key={index}><td>{String(row.current_values.symbol || "—")}</td><td>{String(row.current_values.security_name || "—")}</td><td>{String(row.current_values.units || "—")}</td></tr>)}</tbody></table></div>}</div>}
           <div className="lockGrid">
@@ -1962,9 +2008,9 @@ function PrivateEquityPage({assets,currency,onChanged}:{assets:PrivateEquityAsse
   return <section className="stack"><section className="panel"><p className="eyebrow">No automated pricing or market-risk refresh</p><h2>{editing?"Update private equity":"Add private equity"}</h2><form className="assetForm" onSubmit={save}><label><span>Company</span><input required value={form.company_name} onChange={e=>setForm({...form,company_name:e.target.value})}/></label><label>Stage<select value={form.stage} onChange={e=>setForm({...form,stage:e.target.value})}>{["Pre-seed","Seed","Series A","Series B","Series C+","Growth","Secondary","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Share class<select value={form.share_class} onChange={e=>setForm({...form,share_class:e.target.value as "Common"|"Preferred"})}><option>Common</option><option>Preferred</option></select></label><label>Quantity<input required type="number" min="0" step="any" value={form.quantity} onChange={e=>setForm({...form,quantity:Number(e.target.value)})}/></label><label>Purchase price / unit<input required type="number" min="0" step="any" value={form.purchase_price_per_unit} onChange={e=>setForm({...form,purchase_price_per_unit:Number(e.target.value)})}/></label><label>Investment date<input type="date" value={form.investment_date||""} onChange={e=>setForm({...form,investment_date:e.target.value})}/></label><label>Last valuation / unit<input required type="number" min="0" step="any" value={form.last_valuation_per_unit} onChange={e=>setForm({...form,last_valuation_per_unit:Number(e.target.value)})}/></label><label>Valuation date<input type="date" value={form.valuation_date||""} onChange={e=>setForm({...form,valuation_date:e.target.value})}/></label><label>Ownership %<input type="number" min="0" max="100" step="any" value={form.ownership_percent??""} onChange={e=>setForm({...form,ownership_percent:e.target.value===""?null:Number(e.target.value)})}/></label><label>Valuation source<input value={form.valuation_source||""} onChange={e=>setForm({...form,valuation_source:e.target.value})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{(currency?.supported_currencies||supportedCurrencies).map(x=><option key={x}>{x}</option>)}</select></label><label className="wideField">Notes<textarea value={form.notes||""} onChange={e=>setForm({...form,notes:e.target.value})}/></label><div className="buttonRow left wideField"><button><Save size={16}/>{editing?"Update valuation":"Add"}</button>{editing&&<button type="button" className="secondary" onClick={()=>{setEditing(null);setForm(blank)}}>Cancel</button>}</div></form>{error&&<div className="error">{error}</div>}</section><section className="panel"><div className="panelHeader"><h2>Restricted, non-marketable holdings</h2><strong>{money(total,display)}</strong></div><div className="tableWrap"><table><thead><tr><th>Company</th><th>Stage</th><th>Class</th><th>Current value</th><th>Gain / loss</th><th>Valuation date</th><th>Source</th><th></th></tr></thead><tbody>{assets.map(a=><tr key={a.id}><td>{a.company_name}</td><td>{a.stage}</td><td>{a.share_class}</td><td>{money(a.current_value,a.currency)}</td><td>{money(a.unrealized_gain_loss,a.currency)}</td><td>{a.valuation_date||"-"}</td><td>{a.valuation_source||"-"}</td><td><button className="iconOnly" onClick={()=>edit(a)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deletePrivateEquity(a.id);await onChanged("Private equity investment deleted.")}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 
-export function InsightsPage({ insights }: { insights: Insights }) {
+export function InsightsPage({ insights, onNavigate = () => {} }: { insights: Insights; onNavigate?: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
   const c = insights.display_currency;
-  return <section className="stack"><ReviewInbox findings={insights.findings} currency={c} /><SnapshotChanges comparison={insights.snapshot_comparison} currency={c} /><AllocationPolicySummary policy={insights.allocation_policy} />
+  return <section className="stack"><ReviewInbox findings={insights.findings} currency={c} onNavigate={onNavigate} /><SnapshotChanges comparison={insights.snapshot_comparison} currency={c} /><AllocationPolicySummary policy={insights.allocation_policy} />
     {insights.projection_setup_required && <div className="notice">Set Expenses & Projections assumptions in Settings to enable deterministic and Monte Carlo forecasts.</div>}
     <section className="panel"><h2>Projection guidance</h2><div className="metricGrid"><MetricCard label="Cash runway" value={insights.cash_runway_months == null ? "Set expenses" : `${insights.cash_runway_months.toFixed(1)} months`} /></div></section>
     {insights.forecast && <section className="panel"><h2>10-year forecast</h2><p>10,000 simulated monthly paths, with constant FX assumptions.</p><div className="metricGrid"><MetricCard label="P10 terminal" value={money(insights.forecast.monte_carlo_terminal.p10,c)} /><MetricCard label="P50 terminal" value={money(insights.forecast.monte_carlo_terminal.p50,c)} /><MetricCard label="P90 terminal" value={money(insights.forecast.monte_carlo_terminal.p90,c)} /></div></section>}
@@ -1989,7 +2035,7 @@ export function ValueMetricsPage({ insights }: { insights: Insights }) {
   </section>;
 }
 
-function ReviewInbox({ findings, currency }: { findings: Insights["findings"]; currency: string }) {
+function ReviewInbox({ findings, currency, onNavigate }: { findings: Insights["findings"]; currency: string; onNavigate: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
   return <section className="panel reviewInbox">
     <div className="panelHeader"><div><p className="eyebrow">Decision coach</p><h2>Portfolio review inbox</h2></div><span className="pill">{findings.length} finding{findings.length === 1 ? "" : "s"}</span></div>
     <p className="sectionIntro">Ranked observations based on the latest stored snapshot. These are review prompts, not trade instructions.</p>
@@ -1998,7 +2044,7 @@ function ReviewInbox({ findings, currency }: { findings: Insights["findings"]; c
         <div className="findingHeader"><div><span className={`severityBadge ${finding.severity}`}>{finding.severity}</span><span className="categoryLabel">{finding.category.replace(/_/g, " ")}</span><h3>{finding.title}</h3></div><div className="findingImpact">{finding.impact_amount == null ? "" : money(finding.impact_amount, currency)}<small>{finding.impact_label || "Estimated impact"}</small>{finding.impact_percent != null && <small>{finding.impact_percent_label || "Portfolio share"}: {pct(finding.impact_percent)}</small>}</div></div>
         <p>{finding.explanation}</p>
         <div className="findingDetails"><div><strong>Evidence</strong><ul>{finding.evidence.map(item => <li key={item}>{item}</li>)}</ul></div><div><strong>Suggested review</strong><ul>{finding.suggested_actions.map(item => <li key={item}>{item}</li>)}</ul></div></div>
-        <small className="confidence">Confidence: {finding.confidence}</small>
+        <small className="confidence">Confidence: {finding.confidence}</small>{finding.navigation?.actions ? <div className="buttonRow left">{finding.navigation.actions.map(action => <button className="secondary" key={action.label} onClick={() => onNavigate({...finding.navigation!, filters: action.filters})}>{action.label}</button>)}</div> : finding.navigation && <button className="secondary" onClick={() => onNavigate(finding.navigation!)}>Review affected records</button>}
       </article>)}</div>}
   </section>;
 }
@@ -2122,6 +2168,8 @@ function Settings({
   fxRates,
   assumptions,
   allocationTargets,
+  categories,
+  initialPage,
   brokers,
   positions,
   onSettingsChanged,
@@ -2133,18 +2181,21 @@ function Settings({
   fxRates: FxRate[];
   assumptions: FinancialAssumptions | null;
   allocationTargets: AllocationTarget[];
+  categories: string[];
+  initialPage: "general" | "projections";
   brokers: Broker[];
   positions: Position[];
   onSettingsChanged: () => Promise<void>;
   onCleaned: (text: string) => Promise<void>;
 }) {
-  const [settingsPage, setSettingsPage] = useState<"general" | "brokers" | "fx" | "projections" | "fees">("general");
+  const [settingsPage, setSettingsPage] = useState<"general" | "brokers" | "fx" | "projections" | "fees" | "allocation-types">(initialPage);
   return (
     <section className="stack">
-      <WorkspaceTabs tabs={[{id:"general",label:"General"},{id:"brokers",label:"Brokers"},{id:"fx",label:"FX"},{id:"projections",label:"Expenses & Projections"},{id:"fees",label:"Fees"}]} active={settingsPage} onChange={id => setSettingsPage(id as typeof settingsPage)} />
+      <WorkspaceTabs tabs={[{id:"general",label:"General"},{id:"brokers",label:"Brokers"},{id:"fx",label:"FX"},{id:"allocation-types",label:"Allocation types"},{id:"projections",label:"Expenses & Projections"},{id:"fees",label:"Fees"}]} active={settingsPage} onChange={id => setSettingsPage(id as typeof settingsPage)} />
       {settingsPage === "brokers" && <BrokerSettings brokers={brokers} onChanged={onSettingsChanged} />}
       {settingsPage === "fx" && <FxSettings currency={currency} fxRates={fxRates} onChanged={onSettingsChanged} />}
-      {settingsPage === "projections" && <ProjectionSettings assumptions={assumptions} targets={allocationTargets} onChanged={onSettingsChanged} />}
+      {settingsPage === "allocation-types" && <AllocationCategorySettings categories={categories} onChanged={onSettingsChanged} />}
+      {settingsPage === "projections" && <ProjectionSettings assumptions={assumptions} targets={allocationTargets} categories={categories} onChanged={onSettingsChanged} />}
       {settingsPage === "fees" && currency && <FeesPage positions={positions} currency={currency.display_currency} />}
       {settingsPage === "general" && <>
       <div className="panel settings">
@@ -2182,6 +2233,7 @@ export function BrokerSettings({ brokers, onChanged }: { brokers: Broker[]; onCh
   const [sampleCsv, setSampleCsv] = useState("");
   const [preview, setPreview] = useState<BrokerConfigPreview | null>(null);
   const [detectedHeaders, setDetectedHeaders] = useState<string[]>([]);
+  const [headerText, setHeaderText] = useState("");
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonText, setJsonText] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -2189,27 +2241,27 @@ export function BrokerSettings({ brokers, onChanged }: { brokers: Broker[]; onCh
 
   function begin(broker?: Broker) {
     const next = broker ? { name: broker.name, default_currency: broker.default_currency || "USD", notes: broker.notes || "", locked_fields: broker.locked_fields || [], header_signature: broker.header_signature || [], mappings: broker.mappings || {} } : emptyBrokerDraft();
-    setDraft(next); setEditingId(broker?.id || null); setSampleCsv(""); setPreview(null); setDetectedHeaders([]); setError(null); setJsonMode(false); setJsonText(JSON.stringify(next, null, 2));
+    setDraft(next); setHeaderText(next.header_signature.join(", ")); setEditingId(broker?.id || null); setSampleCsv(""); setPreview(null); setDetectedHeaders([]); setError(null); setJsonMode(false); setJsonText(JSON.stringify(next, null, 2));
   }
-  function applyJson() { try { const next = JSON.parse(jsonText) as BrokerDraft; if (!next.name || !Array.isArray(next.header_signature) || !next.mappings) throw new Error("JSON must contain a broker name, header_signature, and mappings."); setDraft({ ...next, locked_fields: next.locked_fields || [] }); setPreview(null); setError(null); } catch (e) { setError(e instanceof Error ? `Invalid configuration JSON: ${e.message}` : "Invalid configuration JSON."); } }
+  function applyJson() { try { const next = JSON.parse(jsonText) as BrokerDraft; if (!next.name || !Array.isArray(next.header_signature) || !next.mappings) throw new Error("JSON must contain a broker name, header_signature, and mappings."); setDraft({ ...next, locked_fields: next.locked_fields || [] }); setHeaderText(next.header_signature.join(", ")); setPreview(null); setError(null); } catch (e) { setError(e instanceof Error ? `Invalid configuration JSON: ${e.message}` : "Invalid configuration JSON."); } }
   async function loadSample(file?: File) { if (!file) return; setSampleCsv(await file.text()); setPreview(null); setDetectedHeaders([]); }
-  async function runPreview() { if (!draft || !sampleCsv) return; setBusy(true); setError(null); try { const result = await api.previewBroker({ draft, csv_text: sampleCsv, statement_currency: draft.default_currency }); setPreview(result); setDetectedHeaders(result.detected_headers); const next = { ...draft, header_signature: result.header_signature, mappings: result.mappings }; setDraft(next); setJsonText(JSON.stringify(next, null, 2)); } catch (e) { setError(e instanceof Error ? e.message : "Could not preview this broker configuration."); } finally { setBusy(false); } }
-  async function save() { if (!draft || (!editingId && (!preview?.valid || !sampleCsv))) return; setBusy(true); setError(null); try { const payload = { draft, sample_csv: sampleCsv || undefined, statement_currency: draft.default_currency }; if (editingId) await api.updateBroker(editingId, payload); else await api.createBroker(payload); setDraft(null); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not save broker."); } finally { setBusy(false); } }
+  async function runPreview() { if (!draft || !sampleCsv) return; setBusy(true); setError(null); try { const configured = {...draft, header_signature: headerText.split(",").map(x=>x.trim()).filter(Boolean)}; const result = await api.previewBroker({ draft: configured, csv_text: sampleCsv, statement_currency: configured.default_currency }); setPreview(result); setDetectedHeaders(result.detected_headers); const next = { ...configured, header_signature: result.header_signature, mappings: result.mappings }; setDraft(next); setHeaderText(next.header_signature.join(", ")); setJsonText(JSON.stringify(next, null, 2)); } catch (e) { setError(e instanceof Error ? e.message : "Could not preview this broker configuration."); } finally { setBusy(false); } }
+  async function save() { if (!draft) return; setBusy(true); setError(null); try { const normalized = {...draft, header_signature: headerText.split(",").map(x=>x.trim()).filter(Boolean)}; const payload = { draft: normalized, sample_csv: sampleCsv || undefined, statement_currency: normalized.default_currency }; if (editingId) await api.updateBroker(editingId, payload); else await api.createBroker(payload); setDraft(null); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not save broker."); } finally { setBusy(false); } }
   async function remove(broker: Broker) { if (!confirm(`Delete ${broker.name}? This removes its broker-owned accounts and import history when permitted.`)) return; setBusy(true); setError(null); try { await api.deleteBroker(broker.id); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not delete broker."); } finally { setBusy(false); } }
 
   if (!draft) return <section className="stack"><section className="panel"><div className="panelHeader"><div><h2>Brokers</h2><p>Saved CSV layouts are used for every import. Configure and validate layouts here.</p></div><button onClick={() => begin()}><Plus size={16}/> Add broker</button></div>{error && <div className="error">{error}</div>}<div className="tableWrap"><table><thead><tr><th>Name</th><th>Default currency</th><th>Mapped fields</th><th>Version</th><th></th></tr></thead><tbody>{brokers.map(broker => <tr key={broker.id}><td><strong>{broker.name}</strong>{broker.notes && <><br/><small>{broker.notes}</small></>}</td><td>{broker.default_currency || "USD"}</td><td>{Object.keys(broker.mappings || {}).length} {broker.mappings?.symbol && broker.mappings?.units ? "ready" : "incomplete"}</td><td>{broker.configuration_version || 1}</td><td><button className="iconOnly" title="Edit broker" onClick={() => begin(broker)}><Pencil size={15}/></button><button className="iconOnly" title="Delete broker" disabled={busy} onClick={() => remove(broker)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 
-  const headers = detectedHeaders.length ? detectedHeaders : draft.header_signature;
-  return <section className="stack"><section className="panel"><div className="panelHeader"><div><h2>{editingId ? "Edit broker" : "New broker"}</h2><p>Save only after validating this configuration against a sample CSV.</p></div><button className="secondary" disabled={busy} onClick={() => setDraft(null)}>Cancel</button></div>
+  const headers = detectedHeaders.length ? detectedHeaders : headerText.split(",").map(x => x.trim()).filter(Boolean);
+  return <section className="stack"><section className="panel"><div className="panelHeader"><div><h2>{editingId ? "Edit broker" : "New broker"}</h2><p>Save a draft now, or validate it against a sample CSV before importing.</p></div><button className="secondary" disabled={busy} onClick={() => setDraft(null)}>Cancel</button></div>
     <div className="formGrid"><label>Name<input value={draft.name} onChange={e => { setDraft({ ...draft, name: e.target.value }); setPreview(null); }} /></label><label>Default currency<select value={draft.default_currency} onChange={e => { setDraft({ ...draft, default_currency: e.target.value }); setPreview(null); }}><option>USD</option><option>INR</option><option>GBP</option><option>EUR</option></select></label><label>Notes<input value={draft.notes || ""} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label><label>Sample CSV<input type="file" accept=".csv,text/csv" onChange={e => loadSample(e.target.files?.[0])}/></label></div>
     <label>Sample CSV text<textarea value={sampleCsv} onChange={e => { setSampleCsv(e.target.value); setPreview(null); setDetectedHeaders([]); }} placeholder="Paste a representative CSV export" /></label>
     <div className="lockGrid"><strong>Default locked fields</strong><span>Imports inherit these locks; users can override them for one import.</span>{lockableFields.map(field => <label key={field}><input type="checkbox" checked={draft.locked_fields.includes(field)} onChange={e => setDraft({ ...draft, locked_fields: e.target.checked ? [...draft.locked_fields, field] : draft.locked_fields.filter(item => item !== field) })}/>{fieldLabels[field]}</label>)}</div>
     <div className="buttonRow left"><button className={jsonMode ? "secondary" : ""} onClick={() => { setJsonMode(false); setJsonText(JSON.stringify(draft, null, 2)); }}>Visual editor</button><button className={jsonMode ? "" : "secondary"} onClick={() => { setJsonMode(true); setJsonText(JSON.stringify(draft, null, 2)); }}>Advanced JSON</button></div>
-    {jsonMode ? <><label>Broker configuration JSON<textarea className="jsonEditor" value={jsonText} onChange={e => setJsonText(e.target.value)} /></label><div className="buttonRow left"><button className="secondary" onClick={applyJson}>Apply JSON</button></div></> : <div className="stack"><div className="formGrid"><label>Header signature (comma-separated)<input value={draft.header_signature.join(", ")} onChange={e => { setDraft({...draft, header_signature: e.target.value.split(",").map(x => x.trim()).filter(Boolean)}); setPreview(null); }}/></label></div><div className="mappingGrid">{Object.entries(fieldLabels).map(([field, label]) => <label key={field}>{label}<select value={draft.mappings[field] || ""} onChange={e => { const mappings = e.target.value ? {...draft.mappings, [field]: e.target.value} : Object.fromEntries(Object.entries(draft.mappings).filter(([key]) => key !== field)); setDraft({...draft, mappings}); setPreview(null); }}><option value="">Not mapped</option>{headers.map(header => <option key={header}>{header}</option>)}</select></label>)}</div></div>}
-    <div className="buttonRow left"><button disabled={!sampleCsv || busy} onClick={runPreview}><RefreshCw size={16}/> Preview configuration</button><button className="secondary" disabled={busy || (!editingId && !preview?.valid)} onClick={save}><Save size={16}/> Save broker</button></div>{error && <div className="error">{error}</div>}{preview && <div className={preview.valid ? "notice" : "errorList"}>{preview.valid ? `${preview.rows.length} normalized security rows are valid.` : preview.errors.map(item => <div key={item}>{item}</div>)}</div>}</section></section>;
+    {jsonMode ? <><label>Broker configuration JSON<textarea className="jsonEditor" value={jsonText} onChange={e => setJsonText(e.target.value)} /></label><div className="buttonRow left"><button className="secondary" onClick={applyJson}>Apply JSON</button></div></> : <div className="stack"><div className="formGrid"><label>Header names (comma-separated)<input value={headerText} onChange={e => { setHeaderText(e.target.value); setPreview(null); }}/></label></div><div className="mappingGrid">{Object.entries(fieldLabels).map(([field, label]) => <label key={field}>{label}<select value={draft.mappings[field] || ""} onChange={e => { const mappings = e.target.value ? {...draft.mappings, [field]: e.target.value} : Object.fromEntries(Object.entries(draft.mappings).filter(([key]) => key !== field)); setDraft({...draft, mappings}); setPreview(null); }}><option value="">Not mapped</option>{headers.map(header => <option key={header}>{header}</option>)}</select></label>)}</div></div>}
+    <div className="buttonRow left"><button disabled={!sampleCsv || busy} onClick={runPreview}><RefreshCw size={16}/> Preview configuration</button><button className="secondary" disabled={busy} onClick={save}><Save size={16}/> Save broker</button></div>{error && <div className="error">{error}</div>}{preview && <><div className={preview.valid ? "notice" : "errorList"}>{preview.valid ? `${preview.rows.length} normalized security rows are valid.` : preview.errors.map(item => <div key={item}>{item}</div>)}</div><p className="disclosure">Showing the first 25 normalized rows. Each column shows canonical field ← CSV column.</p><div className="tableWrap"><table><thead><tr><th>Row</th>{Object.entries(preview.mappings).map(([field, column]) => <th key={field}>{fieldLabels[field] || field}<br/><small>← {column}</small></th>)}</tr></thead><tbody>{preview.rows.slice(0,25).map(row=><tr key={row.row_number}><td>{row.row_number}</td>{Object.keys(preview.mappings).map(field => <td key={field}>{String((row as unknown as Record<string, unknown>)[field] ?? "—")}</td>)}</tr>)}</tbody></table></div>{preview.invalid_rows.length>0&&<div className="errorList">{preview.invalid_rows.map(row=><div key={row.row_number}>Row {row.row_number}: {Object.values(row.field_errors).flat().join(" ")}</div>)}</div>}</>}</section></section>;
 }
 
-function ProjectionSettings({ assumptions, targets, onChanged }: { assumptions: FinancialAssumptions | null; targets: AllocationTarget[]; onChanged: () => Promise<void> }) {
+function ProjectionSettings({ assumptions, targets, categories, onChanged }: { assumptions: FinancialAssumptions | null; targets: AllocationTarget[]; categories: string[]; onChanged: () => Promise<void> }) {
   const [form, setForm] = useState<FinancialAssumptions>(assumptions || {});
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setForm(assumptions || {}), [assumptions]);
@@ -2222,18 +2274,25 @@ function ProjectionSettings({ assumptions, targets, onChanged }: { assumptions: 
   return <section className="panel"><h2>Expenses & Projections</h2><p>Forecasts become available after return, volatility, inflation, and monthly contribution are completed. Values are assumptions, not advice.</p>
     <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{label}<input type="number" min="0" step="0.01" value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
     <div className="buttonRow left"><button onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}
-    <AllocationTargetSettings targets={targets} onChanged={onChanged} />
+    <AllocationTargetSettings targets={targets} categories={categories} onChanged={onChanged} />
   </section>;
 }
 
-function AllocationTargetSettings({ targets, onChanged }: { targets: AllocationTarget[]; onChanged: () => Promise<void> }) {
+function AllocationTargetSettings({ targets, categories, onChanged }: { targets: AllocationTarget[]; categories: string[]; onChanged: () => Promise<void> }) {
   const [dimension, setDimension] = useState("asset_category");
   const [rows, setRows] = useState<AllocationTarget[]>([]); const [error, setError] = useState<string | null>(null);
   useEffect(() => setRows(targets.filter(t => t.dimension === dimension)), [targets, dimension]);
   async function save() { try { setError(null); await api.saveAllocationTargets(dimension, rows.map(r => ({...r, dimension}))); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Targets must total 100%."); } }
   return <div className="stack"><div className="panelHeader"><h3>Allocation policy</h3><select value={dimension} onChange={e => setDimension(e.target.value)}><option value="asset_category">Asset category</option><option value="country">Country</option><option value="currency">Currency</option></select></div><p>Each target set totals 100%. The allowed range is target ± tolerance; policy guardrails do not create trade orders.</p>
-  {rows.map((row, i) => <div className="formGrid" key={`${row.label}-${i}`}><label>Label<input value={row.label} onChange={e => setRows(rows.map((r, n) => n === i ? {...r, label:e.target.value} : r))}/></label><label>Target %<input type="number" min="0" max="100" value={row.target_percent} onChange={e => setRows(rows.map((r,n) => n === i ? {...r,target_percent:Number(e.target.value)} : r))}/></label><label>Tolerance (± points)<input type="number" min="0" max="100" value={row.tolerance_percent} onChange={e => setRows(rows.map((r,n) => n === i ? {...r,tolerance_percent:Number(e.target.value)} : r))}/></label><button className="secondary" onClick={() => setRows(rows.filter((_,n) => n !== i))}>Remove</button></div>)}
+  {rows.map((row, i) => <div className="formGrid" key={`${row.label}-${i}`}><label>Label{dimension === "asset_category" ? <select value={row.label} onChange={e => setRows(rows.map((r, n) => n === i ? {...r,label:e.target.value} : r))}><option value="">Select category</option>{categories.map(category => <option key={category}>{category}</option>)}</select> : <input value={row.label} onChange={e => setRows(rows.map((r, n) => n === i ? {...r, label:e.target.value} : r))}/>}</label><label>Target %<input type="number" min="0" max="100" value={row.target_percent} onChange={e => setRows(rows.map((r,n) => n === i ? {...r,target_percent:Number(e.target.value)} : r))}/></label><label>Tolerance (± points)<input type="number" min="0" max="100" value={row.tolerance_percent} onChange={e => setRows(rows.map((r,n) => n === i ? {...r,tolerance_percent:Number(e.target.value)} : r))}/></label><button className="secondary" onClick={() => setRows(rows.filter((_,n) => n !== i))}>Remove</button></div>)}
   <div className="buttonRow left"><button className="secondary" onClick={() => setRows([...rows, {dimension,label:"",target_percent:0,tolerance_percent:10}])}>Add target</button><button onClick={save}>Save policy</button></div>{error && <div className="error">{error}</div>}</div>;
+}
+
+function AllocationCategorySettings({ categories, onChanged }: { categories: string[]; onChanged: () => Promise<void> }) {
+  const [name, setName] = useState(""); const [error, setError] = useState<string | null>(null);
+  async function add() { try { setError(null); await api.createAllocationCategory(name); setName(""); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not add allocation type."); } }
+  async function remove(category: string) { try { setError(null); await api.deleteAllocationCategory(category); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not delete allocation type."); } }
+  return <section className="panel"><h2>Allocation types</h2><p>Create categories for manual positions and asset-category policy targets. A type cannot be removed while it is used by a current holding or policy.</p><div className="buttonRow left"><input value={name} placeholder="New allocation type" onChange={e => setName(e.target.value)} /><button disabled={!name.trim()} onClick={add}><Plus size={16}/>Add type</button></div>{error && <div className="error">{error}</div>}<div className="tableWrap"><table><tbody>{categories.map(category => <tr key={category}><td>{category}</td><td><button className="secondary" onClick={() => remove(category)}><Trash2 size={15}/>Delete</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function FxSettings({

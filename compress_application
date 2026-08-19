@@ -11,8 +11,8 @@ mkdir -p "$ARCHIVE_DIR"
 
 if [[ "$MODE" != "portable" && "$MODE" != "--portable" && "$MODE" != "full" && "$MODE" != "--full" ]]; then
   echo "Usage: ./compress_application [--portable|--full]"
-  echo "  --portable  Archive source, scripts, built app files, and data; exclude machine-specific dependencies. Default."
-  echo "  --full      Archive everything except generated archives."
+  echo "  --portable  Archive source and built app files; exclude runtime data and machine-specific dependencies. Default."
+  echo "  --full      Archive everything except generated archives and runtime data."
   exit 1
 fi
 
@@ -22,6 +22,9 @@ if [[ "$MODE" == "--full" || "$MODE" == "full" ]]; then
   echo "  $ARCHIVE_PATH"
   tar \
     --exclude="./archives" \
+    --exclude="./data/portfolio.db.encrypted" \
+    --exclude="./data/auth.json" \
+    --exclude="./data/*.tmp" \
     -czf "$ARCHIVE_PATH" \
     -C "$ROOT_DIR/.." \
     "$APP_NAME"
@@ -31,6 +34,9 @@ else
   echo "  $ARCHIVE_PATH"
   tar \
     --exclude="./archives" \
+    --exclude="./data/portfolio.db.encrypted" \
+    --exclude="./data/auth.json" \
+    --exclude="./data/*.tmp" \
     --exclude="./.git" \
     --exclude="./.venv" \
     --exclude="./frontend/node_modules" \

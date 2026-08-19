@@ -15,7 +15,8 @@ from backend.app.services.repositories import fingerprint_account, import_exists
 
 CANONICAL_FIELDS = ["account_number", "security_name", "symbol", "security_type", "allocation_category", "sector", "acquisition_date", "lot_number", "units", "per_unit_cost_basis", "total_cost_basis", "per_unit_fmv", "total_fmv", "currency", "exchange", "investment_country"]
 LOCKABLE_FIELDS = set(CANONICAL_FIELDS) - {"account_number"}
-EDITABLE_REPAIR_FIELDS = {"symbol", "units", "per_unit_cost_basis", "total_cost_basis"}
+# A repair is deliberately a one-off override, not a broker mapping change.
+EDITABLE_REPAIR_FIELDS = set(CANONICAL_FIELDS)
 ALIASES = {
     "account_number": ["account number", "account", "account id", "client account id"], "security_name": ["security name", "description", "security description", "name"],
     "symbol": ["symbol", "ticker", "ticker symbol"], "security_type": ["security type", "asset type", "asset class", "type"], "units": ["quantity", "units", "shares", "qty", "position"],
@@ -68,7 +69,7 @@ def normalize_row(raw: dict[str, str], mapping: dict[str, str], row_number: int,
     override = override or {}
     def source_value(field: str): return clean_text(raw.get(mapping[field])) if mapping.get(field) else None
     def value(field: str): return clean_text(override[field]) if field in override else source_value(field)
-    raw_values = {field: source_value(field) for field in mapping}
+    raw_values = {field: source_value(field) for field in CANONICAL_FIELDS}
     errors: dict[str, list[str]] = {}
     def fail(field: str, message: str): errors.setdefault(field, []).append(message)
     symbol = value("symbol")
@@ -77,15 +78,17 @@ def normalize_row(raw: dict[str, str], mapping: dict[str, str], row_number: int,
     if units is None: fail("units", "Units must be a number.")
     cost_values = {}
     for field in ("per_unit_cost_basis", "total_cost_basis"):
-        if mapping.get(field):
+        if mapping.get(field) or field in override:
             cost_values[field] = parse_number(value(field))
             if cost_values[field] is None: fail(field, "Cost basis must be a number when this field is mapped.")
         else: cost_values[field] = None
     currency = (value("currency") or statement_currency).upper()
     if currency not in {"USD", "INR", "GBP", "EUR"}: fail("currency", f"Unsupported currency {currency}.")
-    editable_values = {field: value(field) for field in EDITABLE_REPAIR_FIELDS if mapping.get(field) or field in override}
+    editable_values = {field: value(field) for field in EDITABLE_REPAIR_FIELDS}
     if errors:
-        return None, InvalidRow(row_number=row_number, raw_values=raw_values, field_errors=errors, editable_values=editable_values)
+        # csv.writer preserves quoting so users can see the exact source row.
+        record = io.StringIO(); csv.writer(record).writerow([raw.get(key, "") for key in raw])
+        return None, InvalidRow(row_number=row_number, raw_values=raw_values, field_errors=errors, editable_values=editable_values, csv_record=record.getvalue().rstrip("\r\n"))
     assert units is not None and symbol is not None
     name = value("security_name") or symbol
     kind = value("security_type") or ("Cash" if name.lower() == "cash" else "Other")

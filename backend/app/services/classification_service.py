@@ -121,6 +121,8 @@ def update_security_category(
     category: str,
     source: str,
 ) -> None:
+    from backend.app.services.allocation_category_service import register_category
+    register_category(conn, category)
     conn.execute(
         """
         UPDATE securities

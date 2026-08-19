@@ -103,6 +103,7 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify(payload)
     }),
+  deletePosition: (id: number) => request<{ deleted: boolean }>(`/api/positions/${id}`, { method: "DELETE" }),
   profitLoss: () => request<Position[]>("/api/profit-loss"),
   dashboard: () => request<DashboardAnalytics>("/api/analytics/dashboard"),
   insights: () => request<Insights>("/api/insights"),
@@ -141,6 +142,9 @@ export const api = {
   saveAssumptions: (payload: FinancialAssumptions) => request<FinancialAssumptions>("/api/settings/assumptions", { method: "PUT", headers: jsonHeaders, body: JSON.stringify(payload) }),
   allocationTargets: (dimension?: string) => request<AllocationTarget[]>(`/api/allocation-targets${dimension ? `?dimension=${dimension}` : ""}`),
   saveAllocationTargets: (dimension: string, targets: AllocationTarget[]) => request<AllocationTarget[]>(`/api/allocation-targets/${dimension}`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify({ dimension, targets }) }),
+  allocationCategories: () => request<string[]>("/api/allocation-categories"),
+  createAllocationCategory: (name:string) => request<string>("/api/allocation-categories", {method:"POST",headers:jsonHeaders,body:JSON.stringify({name})}),
+  deleteAllocationCategory: (name:string) => request<{deleted:boolean}>(`/api/allocation-categories/${encodeURIComponent(name)}`, {method:"DELETE"}),
   goals: () => request<GoalsSummary>("/api/goals"),
   createGoal: (payload: GoalPayload) => request<Goal>("/api/goals", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   updateGoal: (id: number, payload: GoalPayload) => request<Goal>(`/api/goals/${id}`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify(payload) }),

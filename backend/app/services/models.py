@@ -102,6 +102,7 @@ class InvalidRow(BaseModel):
     raw_values: dict[str, Optional[str]] = Field(default_factory=dict)
     field_errors: dict[str, list[str]] = Field(default_factory=dict)
     editable_values: dict[str, Optional[str]] = Field(default_factory=dict)
+    csv_record: str = ""
 
 
 class ImportPreview(BaseModel):
@@ -314,6 +315,17 @@ class TimeSeriesPoint(BaseModel):
     value: float
 
 
+class CountryReturn(BaseModel):
+    country: str
+    current_market_value: float
+    cost_basis: float
+    unrealized_return: float
+    unrealized_return_percent: Optional[float] = None
+    earliest_snapshot_value: float
+    latest_snapshot_value: float
+    snapshot_value_change_percent: Optional[float] = None
+
+
 class DashboardAnalytics(BaseModel):
     display_currency: str
     brokerage_value: float
@@ -332,6 +344,8 @@ class DashboardAnalytics(BaseModel):
     exchange_allocation: list[AnalyticsPoint]
     cash_vs_invested: list[AnalyticsPoint]
     net_worth_allocation: list[AnalyticsPoint]
+    country_returns: list[CountryReturn] = Field(default_factory=list)
+    country_snapshot_disclosure: str = "Snapshot value change is a holdings-value proxy, not investment performance; imports do not model deposits, withdrawals, dividends, or trades."
 
 
 class FinancialAssumptions(BaseModel):
@@ -356,6 +370,10 @@ class AllocationTarget(BaseModel):
 class AllocationTargetSet(BaseModel):
     dimension: str
     targets: list[AllocationTarget]
+
+
+class AllocationCategoryCreate(BaseModel):
+    name: str
 
 
 class GoalBase(BaseModel):
@@ -449,6 +467,7 @@ class InsightFinding(BaseModel):
     evidence: list[str]
     explanation: str
     suggested_actions: list[str]
+    navigation: Optional[dict[str, object]] = None
 
 
 class SnapshotHoldingChange(BaseModel):

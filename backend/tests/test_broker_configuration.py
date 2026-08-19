@@ -40,6 +40,14 @@ def test_broker_preview_save_and_flat_parsing(sqlite_conn):
     assert len(imported_preview.rows) == 2
 
 
+def test_broker_draft_accepts_partial_or_no_mappings(sqlite_conn):
+    init_db(sqlite_conn)
+    partial = save_broker(sqlite_conn, BrokerDraft(name="Partial", header_signature=["Ticker"], mappings={"symbol": "Ticker"}), None)
+    empty = save_broker(sqlite_conn, BrokerDraft(name="Empty"), None)
+    assert partial["mappings"] == {"symbol": "Ticker"}
+    assert empty["header_signature"] == []
+
+
 def test_import_version_conflict_and_downstream_aggregations(sqlite_conn):
     init_db(sqlite_conn)
     unlock_for_imports()

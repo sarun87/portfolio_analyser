@@ -57,6 +57,7 @@ from backend.app.services.models import (
     FinancialAssumptions,
     AllocationTarget,
     AllocationTargetSet,
+    AllocationCategoryCreate,
     Goal,
     GoalCreate,
     GoalUpdate,
@@ -73,7 +74,8 @@ from backend.app.services.models import (
     HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskSettings,
     FeeAnalysis, FeeSettings, SecurityFee, SecurityFeeInput, PortfolioFee, PortfolioFeeInput,
 )
-from backend.app.services.portfolio_service import create_position, dashboard, list_positions, profit_loss, update_position
+from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
+from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position
 from backend.app.services.price_service import refresh_all, refresh_security
 from backend.app.services.fx_service import (
     SUPPORTED_CURRENCIES,
@@ -229,7 +231,7 @@ def preview_broker(payload: BrokerConfigPreviewRequest) -> BrokerConfigPreview:
 def create_broker(payload: BrokerSaveRequest) -> Broker:
     with get_connection() as conn:
         try:
-            preview = preview_broker_configuration(conn, payload.draft, payload.sample_csv or "", payload.statement_currency)
+            preview = preview_broker_configuration(conn, payload.draft, payload.sample_csv, payload.statement_currency) if payload.sample_csv else None
             return Broker(**save_broker(conn, payload.draft, preview))
         except (ValueError, sqlite3.IntegrityError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -295,6 +297,16 @@ def edit_position(position_id: int, payload: PositionUpdate) -> Position:
             return update_position(conn, position_id, payload)
         except ValueError as exc:
             raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 400, detail=str(exc)) from exc
+
+
+@router.delete("/positions/{position_id}")
+def remove_position(position_id: int) -> dict[str, bool]:
+    with get_connection() as conn:
+        try:
+            delete_position_history(conn, position_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": True}
 
 
 @router.get("/profit-loss", response_model=list[Position])
@@ -589,6 +601,31 @@ def update_allocation_targets(dimension: str, payload: AllocationTargetSet) -> l
             return replace_targets(conn, dimension, payload.targets)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/allocation-categories", response_model=list[str])
+def allocation_categories() -> list[str]:
+    with get_connection() as conn:
+        return list_categories(conn)
+
+
+@router.post("/allocation-categories", response_model=str)
+def add_allocation_category(payload: AllocationCategoryCreate) -> str:
+    with get_connection() as conn:
+        try:
+            return create_category(conn, payload.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/allocation-categories/{name}")
+def remove_allocation_category(name: str) -> dict[str, bool]:
+    with get_connection() as conn:
+        try:
+            delete_category(conn, name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": True}
 
 
 @router.get("/goals", response_model=GoalsSummary)

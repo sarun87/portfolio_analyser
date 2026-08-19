@@ -97,6 +97,22 @@ describe("decision coach workspaces", () => {
     expect(card).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("uses per-unit values in mobile position cards", () => {
+    render(<MobilePositionCard position={{...fund, per_unit_fmv: 25, per_unit_cost_basis: 20}} moneyMode="per-unit" canRefresh onRefresh={vi.fn()} />);
+    expect(screen.getByText("₹25.00")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name:"FUND details"}));
+    expect(screen.getByText("Value / unit")).toBeInTheDocument();
+    expect(screen.getByText("₹20.00")).toBeInTheDocument();
+  });
+
+  it("routes each data-quality action with its structured filter", () => {
+    const onNavigate = vi.fn();
+    const finding = {id:"quality",category:"data_quality",severity:"medium",title:"Incomplete",confidence:"high",evidence:[],explanation:"",suggested_actions:[],navigation:{page:"positions",actions:[{label:"Unclassified positions: 2",filters:{allocation_category:"Unclassified"}},{label:"Unresolved location positions: 1",filters:{exchange:"Unresolved"}}]}} as Insights["findings"][number];
+    render(<InsightsPage insights={{...insights,findings:[finding]}} onNavigate={onNavigate}/>);
+    fireEvent.click(screen.getByRole("button", {name:"Unclassified positions: 2"}));
+    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({filters:{allocation_category:"Unclassified"}}));
+  });
+
   it("loads exposure and opens the manual fund editor", async () => {
     const {rerender}=render(<ExposurePage positions={[fund]}/>);
     expect(await screen.findByText("Effective companies")).toBeInTheDocument();
@@ -186,7 +202,19 @@ describe("decision coach workspaces", () => {
     expect(screen.getByRole("heading", {name:"New broker"})).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", {name:"Advanced JSON"}));
     expect(screen.getByLabelText("Broker configuration JSON")).toBeInTheDocument();
-    expect(screen.getByRole("button", {name:"Save broker"})).toBeDisabled();
+    expect(screen.getByRole("button", {name:"Save broker"})).toBeEnabled();
+  });
+
+  it("uses comma-separated headers for mappings and preview", async () => {
+    apiMock.previewBroker.mockResolvedValue({header_signature:["Account","Ticker","Qty"],detected_headers:["Account","Ticker","Qty"],mappings:{symbol:"Ticker",units:"Qty"},rows:[],invalid_rows:[],errors:[],valid:false});
+    render(<BrokerSettings brokers={[]} onChanged={vi.fn()}/>);
+    fireEvent.click(screen.getByRole("button", {name:/add broker/i}));
+    fireEvent.change(screen.getByLabelText("Header names (comma-separated)"), {target:{value:"Account, Ticker, Qty"}});
+    expect(screen.getAllByRole("option", {name:"Ticker"}).length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText("Sample CSV text"), {target:{value:"Account,Ticker,Qty\nA,AAA,2"}});
+    fireEvent.click(screen.getByRole("button", {name:/preview configuration/i}));
+    await waitFor(() => expect(apiMock.previewBroker).toHaveBeenCalled());
+    expect(apiMock.previewBroker.mock.calls[0][0].draft.header_signature).toEqual(["Account", "Ticker", "Qty"]);
   });
 
   it("keeps detected CSV columns available while a broker mapping is edited", async () => {

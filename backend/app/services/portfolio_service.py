@@ -6,7 +6,7 @@ from datetime import date
 from typing import Optional
 
 from backend.app.services.import_service import derive_per_unit_and_total
-from backend.app.services.models import AnalyticsPoint, DashboardAnalytics, Position, PositionCreate, PositionUpdate, TimeSeriesPoint
+from backend.app.services.models import AnalyticsPoint, CountryReturn, DashboardAnalytics, Position, PositionCreate, PositionUpdate, TimeSeriesPoint
 from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, get_display_currency
 from backend.app.services.repositories import (
     get_or_create_account, get_broker_by_name, get_or_create_security,
@@ -139,6 +139,8 @@ def create_position(conn: sqlite3.Connection, payload: PositionCreate) -> Positi
     security_name = _clean_required(payload.security_name, "Security name")
     security_type = _clean_required(payload.security_type, "Security type")
     allocation_category = _clean_required(payload.allocation_category, "Allocation category")
+    from backend.app.services.allocation_category_service import register_category
+    register_category(conn, allocation_category)
     sector = _clean_required(payload.sector, "Sector")
     snapshot_date = _clean_required(payload.snapshot_date, "Snapshot date")
     exchange = _clean_required(payload.exchange, "Exchange")
@@ -221,6 +223,8 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
     security_name = _clean_required(payload.security_name, "Security name")
     security_type = _clean_required(payload.security_type, "Security type")
     allocation_category = _clean_required(payload.allocation_category, "Allocation category")
+    from backend.app.services.allocation_category_service import register_category
+    register_category(conn, allocation_category)
     sector = _clean_required(payload.sector, "Sector")
     snapshot_date = _clean_required(payload.snapshot_date, "Snapshot date")
     currency = _validate_currency(payload.currency)
@@ -297,6 +301,17 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
     return get_position(conn, position_id)
 
 
+def delete_position_history(conn: sqlite3.Connection, position_id: int) -> None:
+    """Remove the selected account/security/lot holding from every snapshot."""
+    row = conn.execute("SELECT account_id, security_id, lot_number, acquisition_date FROM positions WHERE id=?", (position_id,)).fetchone()
+    if not row:
+        raise ValueError("Position not found.")
+    conn.execute("""DELETE FROM positions WHERE account_id=? AND security_id=?
+        AND COALESCE(lot_number, '')=COALESCE(?, '')
+        AND COALESCE(acquisition_date, '')=COALESCE(?, '')""",
+        (row["account_id"], row["security_id"], row["lot_number"], row["acquisition_date"]))
+
+
 def profit_loss(conn: sqlite3.Connection) -> list[Position]:
     return sorted(
         list_positions(conn),
@@ -345,7 +360,10 @@ def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
     invested = 0.0
     for position in positions:
         value = position.total_fmv_display or 0
-        asset_totals[position.allocation_category] = asset_totals.get(position.allocation_category, 0) + value
+        # Cash is represented once, alongside bank balances, rather than as a
+        # regular asset bucket as well as a cash slice.
+        if position.security_type.lower() != "cash":
+            asset_totals[position.allocation_category] = asset_totals.get(position.allocation_category, 0) + value
         broker_totals[position.broker_name] = broker_totals.get(position.broker_name, 0) + value
         country_totals[position.investment_country] = country_totals.get(position.investment_country, 0) + value
         exchange_totals[position.exchange] = exchange_totals.get(position.exchange, 0) + value
@@ -367,6 +385,36 @@ def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
         value = convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0
         static_accounts_value += value
         static_category_totals[row["category"]] = static_category_totals.get(row["category"], 0) + value
+    bank_cash = static_category_totals.get("Bank Account", 0)
+    asset_totals["Cash"] = cash + bank_cash
+    retirement_value = static_category_totals.get("Retirement Account", 0)
+    if retirement_value:
+        asset_totals["Retirement"] = asset_totals.get("Retirement", 0) + retirement_value
+
+    country_current: dict[str, dict[str, float]] = {}
+    for position in positions:
+        bucket = country_current.setdefault(position.investment_country, {"value": 0.0, "cost": 0.0})
+        bucket["value"] += position.total_fmv_display or 0
+        bucket["cost"] += position.total_cost_basis_display or 0
+    snapshot_dates_all = [row["snapshot_date"] for row in conn.execute("SELECT DISTINCT snapshot_date FROM positions ORDER BY snapshot_date")]
+    country_history: dict[str, tuple[float, float]] = {}
+    if snapshot_dates_all:
+        for cutoff in (snapshot_dates_all[0], snapshot_dates_all[-1]):
+            values: dict[str, float] = {}
+            rows = conn.execute("""SELECT s.investment_country, p.currency, SUM(COALESCE(p.total_fmv, p.units * COALESCE(p.per_unit_fmv, 0), 0)) value
+                FROM positions p JOIN securities s ON s.id=p.security_id
+                WHERE p.snapshot_date=(SELECT MAX(p2.snapshot_date) FROM positions p2 WHERE p2.account_id=p.account_id AND p2.snapshot_date<=?)
+                GROUP BY s.investment_country, p.currency""", (cutoff,)).fetchall()
+            for row in rows:
+                values[row["investment_country"]] = values.get(row["investment_country"], 0) + (convert_amount(conn, row["value"], row["currency"], display_currency) or 0)
+            for country in set(country_current) | set(values):
+                earlier, _ = country_history.get(country, (0.0, 0.0))
+                country_history[country] = (values.get(country, 0.0), values.get(country, 0.0)) if cutoff == snapshot_dates_all[0] else (earlier, values.get(country, 0.0))
+    country_returns = []
+    for country, values in sorted(country_current.items()):
+        early, late = country_history.get(country, (values["value"], values["value"]))
+        unrealized = values["value"] - values["cost"]
+        country_returns.append(CountryReturn(country=country, current_market_value=values["value"], cost_basis=values["cost"], unrealized_return=unrealized, unrealized_return_percent=unrealized / values["cost"] * 100 if values["cost"] else None, earliest_snapshot_value=early, latest_snapshot_value=late, snapshot_value_change_percent=(late - early) / early * 100 if early else None))
 
     real_estate_rows = conn.execute(
         """
@@ -407,8 +455,9 @@ def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
         country_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(country_totals.items())],
         exchange_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(exchange_totals.items())],
         cash_vs_invested=[
-            AnalyticsPoint(label="Cash", value=cash),
+            AnalyticsPoint(label="Cash", value=cash + bank_cash),
             AnalyticsPoint(label="Invested", value=invested),
         ],
         net_worth_allocation=[point for point in net_worth_allocation if point.value > 0],
+        country_returns=country_returns,
     )

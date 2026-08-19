@@ -54,7 +54,7 @@ export type PreviewRow = {
   location_status: string;
 };
 
-export type InvalidRow = { row_number: number; raw_values: Record<string, string | null>; field_errors: Record<string, string[]>; editable_values: Record<string, string | null> };
+export type InvalidRow = { row_number: number; raw_values: Record<string, string | null>; field_errors: Record<string, string[]>; editable_values: Record<string, string | null>; csv_record: string };
 
 export type ImportPreview = {
   broker_id: number;
@@ -161,6 +161,8 @@ export type DashboardAnalytics = {
   exchange_allocation: AnalyticsPoint[];
   cash_vs_invested: AnalyticsPoint[];
   net_worth_allocation: AnalyticsPoint[];
+  country_returns: Array<{ country:string; current_market_value:number; cost_basis:number; unrealized_return:number; unrealized_return_percent?:number|null; earliest_snapshot_value:number; latest_snapshot_value:number; snapshot_value_change_percent?:number|null }>;
+  country_snapshot_disclosure?: string;
 };
 
 export type PriceRefreshResult = {
@@ -275,6 +277,7 @@ export type InsightFinding = {
   id: string; category: string; severity: "critical" | "high" | "medium" | "low"; title: string;
   impact_amount?: number | null; impact_percent?: number | null; impact_label?: string | null; impact_percent_label?: string | null; confidence: "high" | "medium" | "low";
   evidence: string[]; explanation: string; suggested_actions: string[];
+  navigation?: { page?: string; filters?: Record<string, unknown>; section?: string; dimension?: string; label?: string; actions?: Array<{label:string;filters:Record<string,unknown>}> } | null;
 };
 export type SnapshotHoldingChange = {
   security_id: number; security_name: string; symbol?: string | null; change_type: string;

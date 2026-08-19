@@ -76,6 +76,9 @@ def commit_statement(conn, request: ImportCommitRequest) -> ImportResult:
     for row in preview.rows:
         account_id = accounts[row.account_number or "UNKNOWN"]; key = _key(account_id, row.symbol, row.lot_number, row.acquisition_date); existing = current.get(key)
         security_id = get_or_create_security(conn, name=row.security_name, security_type=row.security_type, symbol=row.symbol, exchange=row.exchange, investment_country=row.investment_country, location_source=row.location_status)
+        from backend.app.services.allocation_category_service import register_category
+        register_category(conn, row.allocation_category)
+        conn.execute("UPDATE securities SET allocation_category=?, sector=? WHERE id=?", (row.allocation_category, row.sector, security_id))
         pcb, tcb = derive_per_unit_and_total(row.units, row.per_unit_cost_basis, row.total_cost_basis); pfmv, tfmv = derive_per_unit_and_total(row.units, row.per_unit_fmv, row.total_fmv)
         if existing:
             conn.execute("""UPDATE positions SET import_id=?, security_id=?, snapshot_date=?, acquisition_date=?, lot_number=?, units=?, per_unit_cost_basis=?, total_cost_basis=?, per_unit_fmv=?, total_fmv=?, currency=? WHERE id=?""", (import_id, security_id, preview.statement_date, row.acquisition_date, row.lot_number, row.units, pcb, tcb, pfmv, tfmv, row.currency, existing["id"])); changed_keys.add(key)

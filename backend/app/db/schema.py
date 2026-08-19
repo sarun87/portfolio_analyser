@@ -317,6 +317,19 @@ CREATE INDEX IF NOT EXISTS idx_market_points_date ON market_series_points(observ
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    # Migrations deliberately run on every unlock.  Older encrypted dumps did
+    # not have a version ledger, so the first migration is an additive
+    # baseline: it creates missing objects but never clears user records.
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+    for version, migration in MIGRATIONS:
+        if not conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (version,)).fetchone():
+            migration(conn)
+            conn.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+    ensure_fx_rates(conn)
+    conn.commit()
+
+
+def _baseline_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _ensure_column(conn, "securities", "sector", "TEXT NOT NULL DEFAULT 'Unclassified'")
     _ensure_column(conn, "brokers", "default_currency", "TEXT NOT NULL DEFAULT 'USD'")
@@ -326,17 +339,29 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "brokers", "mappings_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "brokers", "configuration_version", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(conn, "allocation_targets", "tolerance_percent", "REAL NOT NULL DEFAULT 10")
-    ensure_fx_rates(conn)
-    # This release intentionally has no legacy broker/import migration.  On
-    # first open, remove prior portfolio records before creating the editable
-    # starter broker configurations.
-    release = conn.execute("SELECT value FROM app_settings WHERE key = 'broker_configuration_release'").fetchone()
-    if not release or release["value"] != "3":
-        for table in ("price_history", "positions", "statement_imports", "accounts", "securities", "static_accounts", "real_estate_assets", "private_equity_assets", "brokers"):
-            conn.execute(f"DELETE FROM {table}")
-        conn.execute("INSERT INTO app_settings (key, value) VALUES ('broker_configuration_release', '3') ON CONFLICT(key) DO UPDATE SET value='3'")
-        conn.execute("DROP TABLE IF EXISTS broker_import_sections")
-    conn.commit()
+
+
+def _allocation_categories(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS allocation_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    names = {"Unclassified", "Cash", "Equity", "Fixed Income", "Real Estate", "Alternatives", "Other"}
+    for query, column in (
+        ("SELECT DISTINCT allocation_category AS name FROM securities", "name"),
+        ("SELECT DISTINCT asset_category AS name FROM fund_constituents", "name"),
+        ("SELECT DISTINCT label AS name FROM allocation_targets WHERE dimension='asset_category'", "name"),
+    ):
+        try:
+            names.update(row[column].strip() for row in conn.execute(query) if row[column] and row[column].strip())
+        except sqlite3.OperationalError:
+            pass
+    for name in names:
+        conn.execute("INSERT OR IGNORE INTO allocation_categories (name) VALUES (?)", (name,))
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
