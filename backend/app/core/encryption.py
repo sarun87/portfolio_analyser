@@ -71,9 +71,22 @@ class KeyManager:
     def setup(self, passphrase: str, salt: bytes) -> str:
         key = derive_key(passphrase, salt)
         self._fernet = Fernet(key)
+        self._new_session()
+        return self.encrypt(VERIFIER_TEXT.decode("utf-8"))
+
+    def prepare_passphrase_change(self, passphrase: str) -> tuple[bytes, Fernet, str]:
+        salt = generate_salt()
+        candidate = Fernet(derive_key(passphrase, salt))
+        verifier = candidate.encrypt(VERIFIER_TEXT).decode("utf-8")
+        return salt, candidate, verifier
+
+    def activate_fernet(self, fernet: Fernet) -> None:
+        self._fernet = fernet
+        self._new_session()
+
+    def _new_session(self) -> None:
         self._session_token = secrets.token_urlsafe(32)
         self._csrf_token = secrets.token_urlsafe(32)
-        return self.encrypt(VERIFIER_TEXT.decode("utf-8"))
 
     def unlock(self, passphrase: str, salt: bytes, verifier_token: str) -> None:
         key = derive_key(passphrase, salt)
@@ -85,8 +98,7 @@ class KeyManager:
         if verifier != VERIFIER_TEXT:
             raise EncryptionError("Invalid passphrase.")
         self._fernet = candidate
-        self._session_token = secrets.token_urlsafe(32)
-        self._csrf_token = secrets.token_urlsafe(32)
+        self._new_session()
 
     def encrypt(self, value: Optional[str]) -> Optional[str]:
         if value is None:

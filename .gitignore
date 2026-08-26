@@ -4,6 +4,8 @@ archives/
 .venv/
 frontend/node_modules/
 .pytest_cache/
+feature_asks/
+logs/
 __pycache__
 *.pyc
 .DS_Store

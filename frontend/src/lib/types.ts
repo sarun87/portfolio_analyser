@@ -83,6 +83,7 @@ export type Position = {
   security_id: number;
   broker_name: string;
   account_mask: string;
+  account_number?: string | null;
   security_name: string;
   symbol?: string | null;
   security_type: string;
@@ -111,6 +112,7 @@ export type Position = {
 };
 
 export type PositionUpdatePayload = {
+  account_number?: string | null;
   security_name: string;
   symbol?: string | null;
   security_type: string;

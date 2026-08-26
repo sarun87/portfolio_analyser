@@ -18,6 +18,10 @@ class UnlockRequest(BaseModel):
     passphrase: str = Field(min_length=1)
 
 
+class ChangePassphraseRequest(BaseModel):
+    new_passphrase: str = Field(min_length=8)
+
+
 class Broker(BaseModel):
     id: int
     name: str
@@ -145,6 +149,7 @@ class Position(BaseModel):
     security_id: int
     broker_name: str
     account_mask: str
+    account_number: Optional[str] = None
     security_name: str
     symbol: Optional[str] = None
     security_type: str
@@ -173,6 +178,7 @@ class Position(BaseModel):
 
 
 class PositionUpdate(BaseModel):
+    account_number: Optional[str] = None
     security_name: str
     symbol: Optional[str] = None
     security_type: str
@@ -196,6 +202,11 @@ class PositionCreate(PositionUpdate):
     account_number: Optional[str] = None
 
 
+class PositionBulkUpdateItem(BaseModel):
+    position_id: int
+    payload: PositionUpdate
+
+
 class PriceRefreshResult(BaseModel):
     security_id: int
     symbol: Optional[str]
@@ -207,6 +218,7 @@ class PriceRefreshResult(BaseModel):
 class CleanDatabaseResult(BaseModel):
     cleaned: bool
     message: str
+    reset: bool = False
 
 
 class ClassificationRefreshResult(BaseModel):

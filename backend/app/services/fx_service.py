@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 
+from backend.app.core.external_api_logging import open_external_url
 from backend.app.services.models import CurrencySetting, FxRate, FxRateUpdate
 from backend.app.services.repositories import get_setting, set_setting
 
@@ -126,7 +127,7 @@ def fetch_latest_rates(base: str) -> dict[str, float]:
     symbols = ",".join(currency for currency in SUPPORTED_CURRENCIES if currency != base)
     url = f"https://api.frankfurter.dev/v2/rates?{urllib.parse.urlencode({'base': base, 'quotes': symbols})}"
     request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0"})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with open_external_url(request, provider=FX_PROVIDER, timeout=10, opener=urllib.request.urlopen) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if isinstance(payload, list):
         result: dict[str, float] = {}

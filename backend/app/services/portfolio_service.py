@@ -12,6 +12,8 @@ from backend.app.services.repositories import (
     get_or_create_account, get_broker_by_name, get_or_create_security,
     insert_import, insert_position,
 )
+from backend.app.core.encryption import EncryptionError, key_manager
+from cryptography.fernet import InvalidToken
 
 
 POSITION_SELECT_SQL = """
@@ -20,6 +22,7 @@ SELECT
   s.id AS security_id,
   b.name AS broker_name,
   a.account_mask,
+  a.account_number_enc,
   s.name AS security_name,
   s.symbol,
   s.security_type,
@@ -70,6 +73,7 @@ def _position_from_row(conn: sqlite3.Connection, row, display_currency: str) -> 
         security_id=row["security_id"],
         broker_name=row["broker_name"],
         account_mask=row["account_mask"],
+        account_number=_decrypt_account_number(row["account_number_enc"]),
         security_name=row["security_name"],
         symbol=row["symbol"],
         security_type=row["security_type"],
@@ -96,6 +100,18 @@ def _position_from_row(conn: sqlite3.Connection, row, display_currency: str) -> 
         display_currency=display_currency,
         last_price_update=row["last_price_update"],
     )
+
+
+def _decrypt_account_number(encrypted: Optional[str]) -> Optional[str]:
+    """Account data is available to authenticated API requests only.
+
+    Service tests and internal analytics can contain synthetic account rows that
+    are deliberately not encrypted, so they continue to receive no plaintext.
+    """
+    try:
+        return key_manager.decrypt(encrypted)
+    except (EncryptionError, InvalidToken):
+        return None
 
 
 def list_positions(conn: sqlite3.Connection) -> list[Position]:
@@ -134,10 +150,16 @@ def _validate_currency(currency: str) -> str:
     return normalized
 
 
+def _canonical_security_type(value: str) -> str:
+    """Equity is the canonical name for listed stock holdings."""
+    normalized = _clean_required(value, "Security type")
+    return "Equity" if normalized.lower() == "stock" else normalized
+
+
 def create_position(conn: sqlite3.Connection, payload: PositionCreate) -> Position:
     broker_name = _clean_required(payload.broker_name, "Broker")
     security_name = _clean_required(payload.security_name, "Security name")
-    security_type = _clean_required(payload.security_type, "Security type")
+    security_type = _canonical_security_type(payload.security_type)
     allocation_category = _clean_required(payload.allocation_category, "Allocation category")
     from backend.app.services.allocation_category_service import register_category
     register_category(conn, allocation_category)
@@ -211,8 +233,9 @@ def create_position(conn: sqlite3.Connection, payload: PositionCreate) -> Positi
 def update_position(conn: sqlite3.Connection, position_id: int, payload: PositionUpdate) -> Position:
     existing = conn.execute(
         """
-        SELECT p.id, p.security_id
+        SELECT p.id, p.security_id, p.account_id, a.broker_id
         FROM positions p
+        JOIN accounts a ON a.id = p.account_id
         WHERE p.id = ?
         """,
         (position_id,),
@@ -221,7 +244,7 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
         raise ValueError("Position not found.")
 
     security_name = _clean_required(payload.security_name, "Security name")
-    security_type = _clean_required(payload.security_type, "Security type")
+    security_type = _canonical_security_type(payload.security_type)
     allocation_category = _clean_required(payload.allocation_category, "Allocation category")
     from backend.app.services.allocation_category_service import register_category
     register_category(conn, allocation_category)
@@ -242,6 +265,15 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
         payload.total_fmv,
     )
 
+    account_id = (
+        existing["account_id"] if payload.account_number is None
+        else get_or_create_account(conn, existing["broker_id"], _clean_optional(payload.account_number))
+    )
+    if account_id != existing["account_id"]:
+        # Account numbers identify the account, not one snapshot row. Preserve
+        # its complete position history when correcting the number.
+        conn.execute("UPDATE positions SET account_id=? WHERE account_id=?", (account_id, existing["account_id"]))
+        conn.execute("UPDATE statement_imports SET account_id=? WHERE account_id=?", (account_id, existing["account_id"]))
     conn.execute(
         """
         UPDATE securities
@@ -274,7 +306,8 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
     conn.execute(
         """
         UPDATE positions
-        SET snapshot_date = ?,
+        SET account_id = ?,
+            snapshot_date = ?,
             acquisition_date = ?,
             lot_number = ?,
             units = ?,
@@ -286,6 +319,7 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
         WHERE id = ?
         """,
         (
+            account_id,
             snapshot_date,
             acquisition_date,
             lot_number,
@@ -299,6 +333,19 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
         ),
     )
     return get_position(conn, position_id)
+
+
+def update_positions(conn: sqlite3.Connection, updates: list[tuple[int, PositionUpdate]]) -> list[Position]:
+    """Apply a set of position edits atomically, including direct service callers."""
+    conn.execute("SAVEPOINT bulk_position_updates")
+    try:
+        result = [update_position(conn, position_id, payload) for position_id, payload in updates]
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT bulk_position_updates")
+        conn.execute("RELEASE SAVEPOINT bulk_position_updates")
+        raise
+    conn.execute("RELEASE SAVEPOINT bulk_position_updates")
+    return result
 
 
 def delete_position_history(conn: sqlite3.Connection, position_id: int) -> None:

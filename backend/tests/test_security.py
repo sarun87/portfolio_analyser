@@ -9,7 +9,7 @@ from fastapi.routing import APIRoute
 
 from backend.app.api import routes
 from backend.app.api.routes import CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, clear_session_cookies, require_unlocked, set_session_cookies
-from backend.app.core.encryption import generate_salt, key_manager
+from backend.app.core.encryption import EncryptionError, generate_salt, key_manager
 from backend.app.db.database import EncryptedDatabase
 from backend.app.main import app
 
@@ -93,6 +93,52 @@ def test_unlock_session_token_is_random_and_required():
         assert not key_manager.authenticate(first_token)
         assert key_manager.authenticate(key_manager.session_token)
     finally:
+        key_manager.lock()
+
+
+def test_reencrypting_database_rejects_the_old_passphrase_and_preserves_data(tmp_path):
+    database_path = tmp_path / "portfolio.db.encrypted"
+    old_salt = generate_salt()
+    key_manager.setup("correct horse battery staple", old_salt)
+    database = EncryptedDatabase(database_path)
+
+    try:
+        database.unlock()
+        with database.connection() as conn:
+            conn.execute("CREATE TABLE holdings (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            conn.execute("INSERT INTO holdings (name) VALUES ('preserved holding')")
+
+        new_salt, replacement_fernet, new_verifier = key_manager.prepare_passphrase_change("new correct battery staple")
+        database.replace_encrypted_snapshot(database.encrypted_snapshot(replacement_fernet))
+        key_manager.activate_fernet(replacement_fernet)
+
+        database.lock()
+        key_manager.lock()
+        with pytest.raises(EncryptionError):
+            key_manager.unlock("correct horse battery staple", new_salt, new_verifier)
+        key_manager.unlock("new correct battery staple", new_salt, new_verifier)
+        database.unlock()
+        with database.connection() as conn:
+            assert conn.execute("SELECT name FROM holdings").fetchone()["name"] == "preserved holding"
+    finally:
+        database.lock()
+        key_manager.lock()
+
+
+def test_discard_removes_the_encrypted_database_snapshot(tmp_path):
+    database_path = tmp_path / "portfolio.db.encrypted"
+    key_manager.setup("correct horse battery staple", generate_salt())
+    database = EncryptedDatabase(database_path)
+    try:
+        database.unlock()
+        with database.connection() as conn:
+            conn.execute("CREATE TABLE reset_check (id INTEGER PRIMARY KEY)")
+        assert database_path.exists()
+        database.discard()
+        assert not database.is_unlocked
+        assert not database_path.exists()
+    finally:
+        database.lock()
         key_manager.lock()
 
 

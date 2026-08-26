@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+from backend.app.core.external_api_logging import open_external_url
 
 EXCHANGE_COUNTRIES = {
     "NASDAQ": "United States",
@@ -62,7 +63,7 @@ def resolve_security_location(symbol: Optional[str], statement_exchange: Optiona
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(candidate)}?range=1d&interval=1d"
             request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0"})
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with open_external_url(request, provider="yahoo-chart-location", timeout=5, opener=urllib.request.urlopen) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             result = payload.get("chart", {}).get("result") or []
             meta = result[0].get("meta", {}) if result else {}

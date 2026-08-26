@@ -73,6 +73,12 @@ export const api = {
   lock: async () => {
     return request<AuthStatus>("/api/auth/lock", { method: "POST" });
   },
+  changePassphrase: (newPassphrase: string) =>
+    request<AuthStatus>("/api/auth/change-passphrase", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ new_passphrase: newPassphrase })
+    }),
   brokers: () => request<Broker[]>("/api/brokers"),
   previewBroker: (payload: { draft: BrokerDraft; csv_text: string; statement_currency?: string }) => request<BrokerConfigPreview>("/api/brokers/preview", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   createBroker: (payload: { draft: BrokerDraft; sample_csv?: string; statement_currency?: string }) => request<Broker>("/api/brokers", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
@@ -102,6 +108,12 @@ export const api = {
       method: "PUT",
       headers: jsonHeaders,
       body: JSON.stringify(payload)
+    }),
+  updatePositions: (updates: Array<{ position_id: number; payload: PositionUpdatePayload }>) =>
+    request<Position[]>("/api/positions/bulk", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(updates)
     }),
   deletePosition: (id: number) => request<{ deleted: boolean }>(`/api/positions/${id}`, { method: "DELETE" }),
   profitLoss: () => request<Position[]>("/api/profit-loss"),
@@ -198,11 +210,11 @@ export const api = {
   updatePrivateEquity: (id:number,payload:PrivateEquityPayload) => request<PrivateEquityAsset>(`/api/private-equity/${id}`,{method:"PUT",headers:jsonHeaders,body:JSON.stringify(payload)}),
   deletePrivateEquity: (id:number) => request<{deleted:boolean}>(`/api/private-equity/${id}`,{method:"DELETE"}),
   cleanDatabase: () =>
-    request<{ cleaned: boolean; message: string }>("/api/database/clean", {
+    request<{ cleaned: boolean; message: string; reset: boolean }>("/api/database/clean", {
       method: "POST"
     }),
   cleanDatabaseScope: (scope: "brokerage" | "static" | "real-estate" | "private-equity" | "all") =>
-    request<{ cleaned: boolean; message: string }>(`/api/database/clean/${scope}`, {
+    request<{ cleaned: boolean; message: string; reset: boolean }>(`/api/database/clean/${scope}`, {
       method: "POST"
     })
 };

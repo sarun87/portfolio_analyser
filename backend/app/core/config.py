@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = ROOT_DIR / "data"
+LOG_DIR = ROOT_DIR / "logs"
 DATABASE_PATH = DATA_DIR / "portfolio.db.encrypted"
 AUTH_CONFIG_PATH = DATA_DIR / "auth.json"
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
@@ -27,3 +28,7 @@ def validate_security_configuration() -> None:
 
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_log_dir() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)

@@ -8,12 +8,14 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.api.routes import auth_router, router
 from backend.app.core.config import FRONTEND_DIST, TRUSTED_ORIGINS, ensure_data_dir, validate_security_configuration
 from backend.app.core.encryption import key_manager
+from backend.app.core.external_api_logging import setup_external_api_logging
 from backend.app.db.database import database_manager
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_data_dir()
+    setup_external_api_logging()
     try:
         yield
     finally:

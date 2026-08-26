@@ -55,6 +55,24 @@ button.secondary {
   color: #111827;
 }
 
+button.primaryButton {
+  background: #2563eb;
+  border-color: #2563eb;
+  box-shadow: 0 2px 5px rgba(37, 99, 235, 0.28);
+  color: #fff;
+  font-weight: 700;
+}
+
+button.primaryButton:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+button.primaryButton:focus-visible {
+  outline: 3px solid rgba(59, 130, 246, 0.45);
+  outline-offset: 2px;
+}
+
 button.iconOnly {
   aspect-ratio: 1;
   background: #fff;
@@ -822,6 +840,12 @@ button.dangerButton {
   background: #111827;
   border-color: #334155;
   color: #e5e7eb;
+}
+
+[data-theme="dark"] button.primaryButton {
+  background: #60a5fa;
+  border-color: #60a5fa;
+  color: #0f172a;
 }
 
 [data-theme="dark"] .segmented {

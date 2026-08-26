@@ -28,4 +28,12 @@ describe("cookie-authenticated API requests", () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test");
   });
+
+  it("sends a protected password-change request", async () => {
+    await api.changePassphrase("new password");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/auth/change-passphrase");
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test");
+    expect(init.body).toBe(JSON.stringify({ new_passphrase: "new password" }));
+  });
 });

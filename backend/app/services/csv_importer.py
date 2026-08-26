@@ -96,6 +96,7 @@ def normalize_row(raw: dict[str, str], mapping: dict[str, str], row_number: int,
     if value("investment_country"): country, source = value("investment_country"), "statement"
     pcb, tcb = derive_per_unit_and_total(units, cost_values["per_unit_cost_basis"], cost_values["total_cost_basis"])
     pfmv, tfmv = derive_per_unit_and_total(units, parse_number(value("per_unit_fmv")), parse_number(value("total_fmv")))
+    kind = "Equity" if kind.lower() == "stock" else kind
     return PreviewRow(row_number=row_number, account_number=value("account_number"), security_name=name, symbol=symbol, security_type=kind, allocation_category=value("allocation_category") or fallback_category(symbol, name, kind), sector=value("sector") or "Unclassified", acquisition_date=value("acquisition_date"), lot_number=value("lot_number"), units=units, per_unit_cost_basis=pcb, total_cost_basis=tcb, per_unit_fmv=pfmv, total_fmv=tfmv, currency=currency, exchange=exchange, investment_country=country, location_status=source), None
 
 def apply_locked_fields(conn, broker_id: int, rows: list[PreviewRow], locked_fields: list[str]) -> list[PreviewRow]:

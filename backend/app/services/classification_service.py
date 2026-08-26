@@ -9,6 +9,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.app.core.external_api_logging import open_external_url
 from backend.app.services.models import ClassificationRefreshResult
 
 
@@ -59,7 +60,7 @@ def fetch_yahoo_summary(symbol: str) -> dict[str, Any]:
     modules = "quoteType,summaryProfile,assetProfile,fundProfile,defaultKeyStatistics,price"
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{encoded}?modules={modules}"
     request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0"})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with open_external_url(request, provider=PROVIDER, timeout=10, opener=urllib.request.urlopen) as response:
         payload = json.loads(response.read().decode("utf-8"))
     result = payload.get("quoteSummary", {}).get("result") or []
     if not result:

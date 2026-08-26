@@ -4,7 +4,7 @@ import sqlite3
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 from typing import Optional
 
-from backend.app.core.config import SESSION_COOKIE_SECURE, TRUSTED_ORIGINS
+from backend.app.core.config import AUTH_CONFIG_PATH, SESSION_COOKIE_SECURE, TRUSTED_ORIGINS
 
 from backend.app.core.encryption import (
     EncryptionError, generate_salt, key_manager, load_encryption_config, save_encryption_config,
@@ -31,6 +31,7 @@ from backend.app.services.models import (
     BrokerConfigPreviewRequest,
     BrokerDraft,
     BrokerSaveRequest,
+    ChangePassphraseRequest,
     CleanDatabaseResult,
     ClassificationRefreshResult,
     CurrencySetting,
@@ -42,6 +43,7 @@ from backend.app.services.models import (
     ImportPreviewRequest,
     ImportResult,
     Position,
+    PositionBulkUpdateItem,
     PositionCreate,
     PositionUpdate,
     PriceRefreshResult,
@@ -75,7 +77,7 @@ from backend.app.services.models import (
     FeeAnalysis, FeeSettings, SecurityFee, SecurityFeeInput, PortfolioFee, PortfolioFeeInput,
 )
 from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
-from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position
+from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
 from backend.app.services.price_service import refresh_all, refresh_security
 from backend.app.services.fx_service import (
     SUPPORTED_CURRENCIES,
@@ -212,6 +214,36 @@ def lock_auth(response: Response) -> AuthStatus:
     return AuthStatus(configured=bool(salt and verifier), unlocked=False)
 
 
+@router.post("/auth/change-passphrase", response_model=AuthStatus)
+def change_passphrase(request: ChangePassphraseRequest, response: Response) -> AuthStatus:
+    """Re-encrypt the persisted database and replace its password verifier."""
+    try:
+        salt, replacement_fernet, verifier = key_manager.prepare_passphrase_change(request.new_passphrase)
+        staged_config = AUTH_CONFIG_PATH.with_suffix(AUTH_CONFIG_PATH.suffix + ".rotation")
+        save_encryption_config(salt, verifier, staged_config)
+        previous_snapshot = database_manager.path.read_bytes() if database_manager.path.exists() else None
+        replacement_snapshot = database_manager.encrypted_snapshot(replacement_fernet)
+        replaced_snapshot = False
+        try:
+            database_manager.replace_encrypted_snapshot(replacement_snapshot)
+            replaced_snapshot = True
+            staged_config.replace(AUTH_CONFIG_PATH)
+        except OSError:
+            if replaced_snapshot:
+                if previous_snapshot is None:
+                    database_manager.path.unlink(missing_ok=True)
+                else:
+                    database_manager.replace_encrypted_snapshot(previous_snapshot)
+            raise
+        key_manager.activate_fernet(replacement_fernet)
+    except (EncryptionError, OSError) as exc:
+        staged_config = AUTH_CONFIG_PATH.with_suffix(AUTH_CONFIG_PATH.suffix + ".rotation")
+        staged_config.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Could not change the encryption password.") from exc
+    set_session_cookies(response)
+    return AuthStatus(configured=True, unlocked=True)
+
+
 @router.get("/brokers", response_model=list[Broker])
 def brokers() -> list[Broker]:
     with get_connection() as conn:
@@ -288,6 +320,19 @@ def add_position(payload: PositionCreate) -> Position:
             return create_position(conn, payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/positions/bulk", response_model=list[Position])
+def edit_positions_bulk(updates: list[PositionBulkUpdateItem]) -> list[Position]:
+    if not updates:
+        raise HTTPException(status_code=400, detail="At least one position update is required.")
+    if len({item.position_id for item in updates}) != len(updates):
+        raise HTTPException(status_code=400, detail="A position can only be updated once per bulk request.")
+    with get_connection() as conn:
+        try:
+            return update_positions(conn, [(item.position_id, item.payload) for item in updates])
+        except ValueError as exc:
+            raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 400, detail=str(exc)) from exc
 
 
 @router.put("/positions/{position_id}", response_model=Position)
@@ -674,26 +719,34 @@ def refresh_prices() -> list[PriceRefreshResult]:
         return refresh_all(conn)
 
 
+def reset_application(response: Response) -> CleanDatabaseResult:
+    database_manager.discard()
+    AUTH_CONFIG_PATH.unlink(missing_ok=True)
+    key_manager.lock()
+    clear_session_cookies(response)
+    return CleanDatabaseResult(
+        cleaned=True,
+        reset=True,
+        message="All application data, settings, and encryption credentials were removed.",
+    )
+
+
 @router.post("/database/clean", response_model=CleanDatabaseResult)
-def clean_database() -> CleanDatabaseResult:
-    with get_connection() as conn:
-        clean_portfolio_data(conn)
-        return CleanDatabaseResult(
-            cleaned=True,
-            message="Portfolio data cleared. Encryption settings and broker definitions were preserved.",
-        )
+def clean_database(response: Response) -> CleanDatabaseResult:
+    return reset_application(response)
 
 
 @router.post("/database/clean/{scope}", response_model=CleanDatabaseResult)
-def clean_database_scope(scope: str) -> CleanDatabaseResult:
+def clean_database_scope(scope: str, response: Response) -> CleanDatabaseResult:
     normalized = scope.lower().strip()
     cleaners = {
         "brokerage": (clean_brokerage_data, "Brokerage data cleared."),
         "static": (clean_static_account_data, "Static banking data cleared."),
         "real-estate": (clean_real_estate_data, "Real estate data cleared."),
         "private-equity": (clean_private_equity_data, "Private equity data cleared."),
-        "all": (clean_portfolio_data, "All portfolio data cleared."),
     }
+    if normalized == "all":
+        return reset_application(response)
     if normalized not in cleaners:
         raise HTTPException(status_code=400, detail="Unsupported clean scope.")
     cleaner, message = cleaners[normalized]

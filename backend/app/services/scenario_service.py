@@ -211,9 +211,9 @@ def _scenario_goals(conn, changes, stress_factor=1.0, stress=False):
 
 _PRESETS = {
     "market_crash": {"market": -30, "note": "Broad market crash: -30% to non-cash holdings."},
-    "2008_style": {"types": {"Stock": -37, "ETF": -30, "Mutual Fund": -30, "Bond": 5, "Bond Fund": 5}, "note": "Historical-style 2008 proxy; not a replay of actual security returns."},
-    "2020_style": {"types": {"Stock": -20, "ETF": -18, "Mutual Fund": -18, "Bond": 2, "Bond Fund": 2}, "note": "Historical-style 2020 shock proxy; recovery timing is not modeled."},
-    "rate_shock": {"rate_bps": 200, "types": {"Stock": -5, "ETF": -5}, "note": "+200 bp rate shock with duration proxies for fixed income."},
+    "2008_style": {"types": {"Equity": -37, "ETF": -30, "Mutual Fund": -30, "Bond": 5, "Bond Fund": 5}, "note": "Historical-style 2008 proxy; not a replay of actual security returns."},
+    "2020_style": {"types": {"Equity": -20, "ETF": -18, "Mutual Fund": -18, "Bond": 2, "Bond Fund": 2}, "note": "Historical-style 2020 shock proxy; recovery timing is not modeled."},
+    "rate_shock": {"rate_bps": 200, "types": {"Equity": -5, "ETF": -5}, "note": "+200 bp rate shock with duration proxies for fixed income."},
 }
 
 

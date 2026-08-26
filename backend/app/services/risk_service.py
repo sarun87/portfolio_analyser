@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
 
+from backend.app.core.external_api_logging import open_external_url
 from backend.app.services.models import (
     CorrelationRow, HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskHolding, RiskSettings,
 )
@@ -47,7 +48,7 @@ def fetch_yahoo_history(symbol: str) -> tuple[str, list[tuple[str, float]]]:
     encoded = urllib.parse.quote(symbol)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=5y&interval=1d&events=div%2Csplits"
     request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0"})
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with open_external_url(request, provider=PROVIDER, timeout=20, opener=urllib.request.urlopen) as response:
         payload = json.loads(response.read().decode("utf-8"))
     results = payload.get("chart", {}).get("result") or []
     if not results:

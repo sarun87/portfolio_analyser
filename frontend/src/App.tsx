@@ -105,7 +105,7 @@ const navItems: Array<{ view: View; label: string; icon: typeof Table2 }> = [
 
 const colors = ["#2563eb", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2", "#4b5563"];
 const supportedCurrencies = ["USD", "INR", "GBP", "EUR"];
-const securityTypes = ["Stock", "ETF", "Mutual Fund", "Bond", "Bond Fund", "Cash", "Other"];
+const securityTypes = ["Equity", "ETF", "Mutual Fund", "Bond", "Bond Fund", "Cash", "Other"];
 const fallbackAllocationCategories = ["Large Cap", "Mid Cap", "Small Cap", "Hybrid Fund", "Bonds", "International", "Cash", "Unclassified", "Other"];
 const sectors = ["Communication Services", "Consumer Discretionary", "Consumer Staples", "Energy", "Financials", "Health Care", "Industrials", "Information Technology", "Materials", "Real Estate", "Utilities", "Diversified", "Unclassified"];
 
@@ -314,6 +314,13 @@ export function App() {
     }
   }
 
+  function resetClientState() {
+    setBrokers([]); setPositions([]); setProfitLoss([]); setAnalytics(null); setCurrency(null); setFxRates([]);
+    setStaticAccounts([]); setRealEstate([]); setPrivateEquity([]); setGoals(null); setAssumptions(null);
+    setAllocationTargets([]); setScenarios([]); setAllocationCategoryOptions([]); setInsights(null);
+    setMessage(null); setAuth({ configured: false, unlocked: false });
+  }
+
   if (!auth) {
     return <div className="boot">Loading portfolio analyser...</div>;
   }
@@ -492,6 +499,7 @@ export function App() {
               setMessage(text);
               await loadData();
             }}
+            onReset={resetClientState}
           />
         )}
       </main>
@@ -538,7 +546,7 @@ function AuthGate({ auth, onAuthenticated }: { auth: AuthStatus; onAuthenticated
           placeholder={configured ? "Passphrase" : "Minimum 8 characters"}
         />
         {error && <div className="error">{error}</div>}
-        <button disabled={busy || !passphrase}>
+        <button className="primaryButton" disabled={busy || !passphrase}>
           <Unlock size={16} />
           {configured ? "Unlock" : "Set Passphrase"}
         </button>
@@ -613,6 +621,7 @@ function ChartPanel({ title, children }: { title: string; children: React.ReactN
 }
 
 type PositionDraft = {
+  account_number: string;
   security_name: string;
   symbol: string;
   security_type: string;
@@ -642,7 +651,7 @@ function emptyManualPosition(brokers: Broker[]): ManualPositionDraft {
     account_number: "",
     security_name: "",
     symbol: "",
-    security_type: "Stock",
+    security_type: "Equity",
     allocation_category: "Unclassified",
     sector: "Unclassified",
     exchange: "Unresolved",
@@ -661,6 +670,7 @@ function emptyManualPosition(brokers: Broker[]): ManualPositionDraft {
 
 function draftFromPosition(position: Position): PositionDraft {
   return {
+    account_number: position.account_number || "",
     security_name: position.security_name || "",
     symbol: position.symbol || "",
     security_type: position.security_type || "Other",
@@ -712,6 +722,7 @@ function payloadFromDraft(draft: PositionDraft): PositionUpdatePayload {
     throw new Error("Snapshot date is required.");
   }
   return {
+    account_number: optionalText(draft.account_number),
     security_name: draft.security_name.trim(),
     symbol: optionalText(draft.symbol),
     security_type: draft.security_type.trim(),
@@ -764,6 +775,7 @@ function PositionsTable({
   const [addingPosition, setAddingPosition] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<number, PositionDraft>>({});
+  const [selectedPositionIds, setSelectedPositionIds] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState<number | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [showExitPrompt, setShowExitPrompt] = useState(false);
@@ -811,6 +823,14 @@ function PositionsTable({
       return sort.direction === "asc" ? result : -result;
     });
   }, [positions, query, sort, structuredFilter]);
+
+  useEffect(() => {
+    const visibleIds = new Set(filtered.map((position) => position.id));
+    setSelectedPositionIds((current) => {
+      const visibleSelection = new Set([...current].filter((id) => visibleIds.has(id)));
+      return visibleSelection.size === current.size ? current : visibleSelection;
+    });
+  }, [filtered]);
 
   async function refresh(position: Position) {
     setRefreshing(position.security_id);
@@ -866,6 +886,7 @@ function PositionsTable({
   function enterEditMode() {
     setEditError(null);
     setDrafts(Object.fromEntries(positions.map((position) => [position.id, draftFromPosition(position)])));
+    setSelectedPositionIds(new Set());
     setEditMode(true);
   }
 
@@ -876,11 +897,25 @@ function PositionsTable({
   function updateDraft(position: Position, patch: Partial<PositionDraft>) {
     setDrafts((current) => ({
       ...current,
-      [position.id]: {
-        ...(current[position.id] || draftFromPosition(position)),
-        ...patch
-      }
+      ...Object.fromEntries(
+        (selectedPositionIds.has(position.id) ? filtered.filter((item) => selectedPositionIds.has(item.id)) : [position])
+          .map((item) => [item.id, { ...(current[item.id] || draftFromPosition(item)), ...patch }])
+      )
     }));
+  }
+
+  function togglePosition(positionId: number) {
+    setSelectedPositionIds((current) => {
+      const next = new Set(current);
+      if (next.has(positionId)) next.delete(positionId); else next.add(positionId);
+      return next;
+    });
+  }
+
+  function toggleAllVisible() {
+    const visibleIds = filtered.map((position) => position.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedPositionIds.has(id));
+    setSelectedPositionIds(allSelected ? new Set() : new Set(visibleIds));
   }
 
   function changedFields(position: Position) {
@@ -899,6 +934,7 @@ function PositionsTable({
     setEditError(null);
     if (changedPositions.length === 0) {
       setDrafts({});
+      setSelectedPositionIds(new Set());
       setEditMode(false);
       return;
     }
@@ -908,6 +944,7 @@ function PositionsTable({
   function discardAllEdits() {
     setShowExitPrompt(false);
     setDrafts({});
+    setSelectedPositionIds(new Set());
     setEditMode(false);
   }
 
@@ -938,12 +975,11 @@ function PositionsTable({
         position,
         payload: payloadFromDraft(draftFor(position))
       }));
-      for (const update of updates) {
-        await api.updatePosition(update.position.id, update.payload);
-      }
+      await api.updatePositions(updates.map((update) => ({ position_id: update.position.id, payload: update.payload })));
       await onRefresh();
       setShowExitPrompt(false);
       setDrafts({});
+      setSelectedPositionIds(new Set());
       setEditMode(false);
     } catch (error) {
       setShowExitPrompt(false);
@@ -977,7 +1013,7 @@ function PositionsTable({
             {editMode ? "Exit Edit" : "Edit Mode"}
           </button>
           {editMode && changedPositions.length > 0 && (
-            <button disabled={savingAll || saving !== null} onClick={saveAllEdits}>
+            <button className="primaryButton" disabled={savingAll || saving !== null} onClick={saveAllEdits}>
               <Save size={15} />
               {savingAll ? "Saving..." : `Save All (${changedPositions.length})`}
             </button>
@@ -1018,7 +1054,7 @@ function PositionsTable({
             <label>Investment country<input value={manualDraft.investment_country} onChange={(event) => updateManualDraft({ investment_country: event.target.value })} /></label>
           </div>
           {addError && <p className="inlineError">{addError}</p>}
-          <div className="buttonRow left"><button disabled={addingPosition} onClick={addManualPosition}><Save size={15} />{addingPosition ? "Adding..." : "Add position"}</button></div>
+          <div className="buttonRow left"><button className="primaryButton" disabled={addingPosition} onClick={addManualPosition}><Save size={15} />{addingPosition ? "Adding..." : "Add position"}</button></div>
         </div>
       )}
       {editError && <p className="inlineError">{editError}</p>}
@@ -1026,6 +1062,7 @@ function PositionsTable({
         <table>
           <thead>
             <tr>
+              {editMode && <th><SelectAllCheckbox checked={filtered.length > 0 && filtered.every((position) => selectedPositionIds.has(position.id))} indeterminate={filtered.some((position) => selectedPositionIds.has(position.id)) && !filtered.every((position) => selectedPositionIds.has(position.id))} onChange={toggleAllVisible} /></th>}
               {columnVisible("broker") && <SortableTh label="Broker" sortKey="broker_name" sort={sort} onSort={setSort} />}
               {columnVisible("account") && <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={setSort} />}
               {columnVisible("security") && <SortableTh label="Security" sortKey="security" sort={sort} onSort={setSort} />}
@@ -1056,8 +1093,9 @@ function PositionsTable({
               const draft = draftFor(position);
               return (
                 <tr key={position.id} className={editMode ? "editingRow" : ""}>
+                  {editMode && <td><input type="checkbox" aria-label={`Select ${position.security_name}`} checked={selectedPositionIds.has(position.id)} onChange={() => togglePosition(position.id)} /></td>}
                   {columnVisible("broker") && <td>{position.broker_name}</td>}
-                  {columnVisible("account") && <td>{position.account_mask}</td>}
+                  {columnVisible("account") && <td>{editMode ? <input className={inputClass(position, "account_number")} aria-label="Account number" value={draft.account_number} onChange={(event) => updateDraft(position, { account_number: event.target.value })} /> : position.account_mask}</td>}
                   {columnVisible("security") && <td className="securityCell">
                     {editMode ? (
                       <div className="stackedInputs">
@@ -1163,7 +1201,7 @@ function PositionsTable({
             <h3 id="save-edits-title">Save all position edits?</h3>
             <p>{changedPositions.length} position{changedPositions.length === 1 ? " has" : "s have"} unsaved changes.</p>
             <div className="buttonRow">
-              <button disabled={savingAll} onClick={saveAllEdits}><Save size={15} />Save all edits</button>
+              <button className="primaryButton" disabled={savingAll} onClick={saveAllEdits}><Save size={15} />Save all edits</button>
               <button className="dangerButton" disabled={savingAll} onClick={discardAllEdits}>Discard changes</button>
               <button className="secondary" disabled={savingAll} onClick={() => setShowExitPrompt(false)}>Continue editing</button>
             </div>
@@ -1172,6 +1210,12 @@ function PositionsTable({
       )}
     </section>
   );
+}
+
+function SelectAllCheckbox({ checked, indeterminate, onChange }: { checked: boolean; indeterminate: boolean; onChange: () => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (inputRef.current) inputRef.current.indeterminate = indeterminate; }, [indeterminate]);
+  return <input ref={inputRef} type="checkbox" aria-label="Select all visible positions" checked={checked} onChange={onChange} />;
 }
 
 function SortableTh<T>({
@@ -1471,6 +1515,7 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
     ...(preview.ignored_rows || []),
     ...(preview.invalid_rows || []).filter(row => ignoredRowNumbers.includes(row.row_number))
   ].filter((row, index, rows) => rows.findIndex(item => item.row_number === row.row_number) === index) : [];
+  const canCommit = Boolean(preview && !previewStale && !preview.duplicate && preview.rows.length > 0 && visibleInvalidRows.length === 0 && preview.errors.length === 0);
 
   return (
     <section className="stack">
@@ -1507,11 +1552,11 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
         {filename && <div className="fileLine">{filename}</div>}
         {error && <div className="error">{error}</div>}
         <div className="buttonRow">
-          <button disabled={!csvText || !brokers.length || busy} onClick={previewImport}>
+          <button className={!preview || previewStale ? "primaryButton" : "secondary"} disabled={!csvText || !brokers.length || busy} onClick={previewImport}>
             <FileUp size={16} />
             Preview Import
           </button>
-          <button className="secondary" disabled={!preview || previewStale || busy || preview.duplicate || preview.rows.length === 0 || visibleInvalidRows.length > 0 || preview.errors.length > 0} onClick={commitImport}>
+          <button className={canCommit ? "primaryButton" : "secondary"} disabled={!canCommit || busy} onClick={commitImport}>
             Commit Import
           </button>
         </div>
@@ -1524,7 +1569,7 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
             <div className="buttonRow compact">
               {previewStale && <span className="pill warn">Refresh required</span>}
               <span className={preview.duplicate ? "pill warn" : "pill"}>{preview.duplicate ? "Duplicate" : `${preview.rows.length} rows`}</span>
-              <button className="secondary" disabled={busy} onClick={previewImport}><RefreshCw size={15} />Refresh Preview</button>
+              <button className={previewStale ? "primaryButton" : "secondary"} disabled={busy} onClick={previewImport}><RefreshCw size={15} />Refresh Preview</button>
             </div>
           </div>
           {preview.errors.length > 0 && (
@@ -2124,7 +2169,7 @@ export function ScenarioLab({ scenarios, positions, goals, currency, onChanged }
     <div className="segmented labTabs"><button className={mode==="scenario"?"active":""} onClick={()=>setMode("scenario")}>Scenario Lab</button><button className={mode==="stress"?"active":""} onClick={()=>setMode("stress")}>Stress Testing</button></div>
     {error&&<div className="error">{error}</div>}
     {mode==="scenario"?<>
-      <section className="panel"><div className="panelHeader"><div><p className="eyebrow">Non-destructive model</p><h2>Proposed portfolio</h2></div><div className="buttonRow compact"><button className="secondary" onClick={()=>{setForm(blank());setEditing(null);setAnalysis(null);}}>New</button><button className="secondary" disabled={busy} onClick={analyze}>Compare</button><button disabled={busy} onClick={save}><Save size={16}/>Save scenario</button></div></div>
+      <section className="panel"><div className="panelHeader"><div><p className="eyebrow">Non-destructive model</p><h2>Proposed portfolio</h2></div><div className="buttonRow compact"><button className="secondary" onClick={()=>{setForm(blank());setEditing(null);setAnalysis(null);}}>New</button><button className="secondary" disabled={busy} onClick={analyze}>Compare</button><button className="primaryButton" disabled={busy} onClick={save}><Save size={16}/>Save scenario</button></div></div>
         <p className="fieldHelpIntro">All values below are amounts in {currency.display_currency}, not percentages. This model does not change stored positions.</p>
         <div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/><small className="fieldHelp">A label used to save and compare this scenario.</small></label><label>Contribution / deposit<input type="number" value={form.contribution} onChange={e=>setForm({...form,contribution:Number(e.target.value)})}/><small className="fieldHelp">External cash added to the portfolio in {currency.display_currency}.</small></label><label>Withdrawal / distribution<input type="number" value={form.withdrawal} onChange={e=>setForm({...form,withdrawal:Number(e.target.value)})}/><small className="fieldHelp">Cash removed from the portfolio in {currency.display_currency}; available cash must cover it.</small></label><label>Additional cash-reserve change<input type="number" value={form.cash_reserve_change} onChange={e=>setForm({...form,cash_reserve_change:Number(e.target.value)})}/><small className="fieldHelp">A signed cash adjustment in {currency.display_currency}: positive adds cash, negative removes it.</small></label><label className="wideField">Description<textarea value={form.description||""} onChange={e=>setForm({...form,description:e.target.value})}/><small className="fieldHelp">Optional notes about the purpose or assumptions of this scenario.</small></label></div>
         <div className="panelHeader subHeader"><div><h3>Security value changes</h3><p>Positive values buy; negative values sell. Amounts use {currency.display_currency}; cash is adjusted automatically.</p></div><div className="addChange"><select value={selectedSecurity} onChange={e=>setSelectedSecurity(e.target.value)}><option value="">Choose holding</option>{securities.map(s=><option key={`${s.id}|${s.currency}`} value={`${s.id}|${s.currency}`}>{s.symbol||s.name} — {s.name} ({s.currency})</option>)}</select><button className="secondary" onClick={addSecurity}><Plus size={15}/>Add</button></div></div>
@@ -2134,7 +2179,7 @@ export function ScenarioLab({ scenarios, positions, goals, currency, onChanged }
       {analysisStale&&<div className="notice">Scenario inputs changed. Run Compare again to refresh these results.</div>}{analysis&&<ScenarioComparison result={analysis}/>} 
       <section className="panel"><h2>Saved scenarios</h2>{scenarios.length===0?<div className="emptyState">No saved scenarios yet.</div>:<div className="savedScenarioGrid">{scenarios.map(saved=><article key={saved.id}><div><strong>{saved.name}</strong><span>{saved.description||"No description"}</span></div><div className="buttonRow compact"><button className="secondary" onClick={()=>{setForm(scenarioPayload(saved));setEditing(saved.id);setAnalysis(null);}}>Load</button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${saved.name}?`)){await api.deleteScenario(saved.id);await onChanged();}}}><Trash2 size={15}/></button></div></article>)}</div>}</section>
     </>:<>
-      <section className="panel"><div className="panelHeader"><div><p className="eyebrow">Instantaneous shocks</p><h2>Portfolio stress test</h2></div><button disabled={busy} onClick={runStress}><FlaskConical size={16}/>Run stress test</button></div>
+      <section className="panel"><div className="panelHeader"><div><p className="eyebrow">Instantaneous shocks</p><h2>Portfolio stress test</h2></div><button className="primaryButton" disabled={busy} onClick={runStress}><FlaskConical size={16}/>Run stress test</button></div>
         <div className="formGrid"><label>Preset<select value={stress.preset||""} onChange={e=>setStress({...stress,preset:e.target.value||null})}><option value="">Custom only</option><option value="market_crash">Market crash</option><option value="2008_style">2008-style</option><option value="2020_style">2020-style</option><option value="rate_shock">Rate shock</option></select></label><label>Additional market shock %<input type="number" min="-100" max="100" value={stress.market_shock_percent} onChange={e=>setStress({...stress,market_shock_percent:Number(e.target.value)})}/></label><label>Interest-rate change (bps)<input type="number" value={stress.interest_rate_change_bps} onChange={e=>setStress({...stress,interest_rate_change_bps:Number(e.target.value)})}/></label></div>
         <ShockEditor title="Currency moves" rows={currency.supported_currencies} values={stress.currency_shocks} onChange={values=>setStress({...stress,currency_shocks:values})}/><ShockEditor title="Allocation-category shocks" rows={stressCategories} values={stress.category_shocks} onChange={values=>setStress({...stress,category_shocks:values})}/><ShockEditor title="Sector shocks" rows={stressSectors} values={stress.sector_shocks} onChange={values=>setStress({...stress,sector_shocks:values})}/><ShockEditor title="Security shocks" rows={stressSecurities.map(s=>String(s.id))} labels={Object.fromEntries(stressSecurities.map(s=>[String(s.id),s.symbol||s.name]))} values={Object.fromEntries(Object.entries(stress.security_shocks).map(([k,v])=>[String(k),v]))} onChange={values=>setStress({...stress,security_shocks:Object.fromEntries(Object.entries(values).map(([k,v])=>[Number(k),v]))})}/>
       </section>{stressStale&&<div className="notice">Stress inputs changed. Run the stress test again to refresh these results.</div>}{stressResult&&<StressResults result={stressResult}/>}</>}
@@ -2155,8 +2200,8 @@ function GoalsPage({ summary, currency, onChanged }: { summary: GoalsSummary; cu
   const [form, setForm] = useState<GoalPayload | null>(null); const [editing, setEditing] = useState<number | null>(null); const [error,setError]=useState<string|null>(null);
   const edit = (goal?: GoalsSummary["goals"][number]) => { setEditing(goal?.id ?? null); setForm(goal ? {name:goal.name,description:goal.description,target_amount:goal.target_amount,target_currency:goal.target_currency,target_month:goal.target_month,allocated_amount:goal.allocated_amount,allocated_currency:goal.allocated_currency,monthly_contribution:goal.monthly_contribution,contribution_currency:goal.contribution_currency,priority:goal.priority} : blank()); };
   async function save() { if (!form) return; try { setError(null); editing ? await api.updateGoal(editing,form) : await api.createGoal(form); setForm(null); await onChanged(); } catch(e) {setError(e instanceof Error?e.message:"Could not save goal.");} }
-  return <section className="stack"><div className="metricGrid"><MetricCard label="Investable financial assets" value={money(summary.investable_financial_assets,summary.display_currency)} /><MetricCard label="Allocated to goals" value={money(summary.total_allocated,summary.display_currency)} /><MetricCard label="Unallocated remainder" value={money(summary.unallocated_remainder,summary.display_currency)} /></div>{summary.over_allocated && <div className="error">Goal allocations exceed investable financial assets. This is a warning only; allocations are not blocked.</div>}<div className="panelHeader"><h2>Goals</h2><button onClick={() => edit()}><Target size={16}/> Add goal</button></div>
-  {form && <section className="panel"><h2>{editing ? "Edit goal" : "New goal"}</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Target month<input type="month" value={form.target_month} onChange={e=>setForm({...form,target_month:e.target.value})}/></label><label>Target amount<input type="number" value={form.target_amount} onChange={e=>setForm({...form,target_amount:Number(e.target.value)})}/></label><label>Target currency<CurrencyInput value={form.target_currency} onChange={v=>setForm({...form,target_currency:v})} currencies={currency.supported_currencies}/></label><label>Manual allocation<input type="number" value={form.allocated_amount} onChange={e=>setForm({...form,allocated_amount:Number(e.target.value)})}/></label><label>Allocation currency<CurrencyInput value={form.allocated_currency} onChange={v=>setForm({...form,allocated_currency:v})} currencies={currency.supported_currencies}/></label><label>Monthly contribution<input type="number" value={form.monthly_contribution} onChange={e=>setForm({...form,monthly_contribution:Number(e.target.value)})}/></label><label>Contribution currency<CurrencyInput value={form.contribution_currency} onChange={v=>setForm({...form,contribution_currency:v})} currencies={currency.supported_currencies}/></label><label>Priority<input type="number" value={form.priority ?? ""} onChange={e=>setForm({...form,priority:e.target.value ? Number(e.target.value) : null})}/></label><label>Description<input value={form.description ?? ""} onChange={e=>setForm({...form,description:e.target.value})}/></label></div><div className="buttonRow left"><button onClick={save}>Save goal</button><button className="secondary" onClick={()=>setForm(null)}>Cancel</button></div>{error&&<div className="error">{error}</div>}</section>}
+  return <section className="stack"><div className="metricGrid"><MetricCard label="Investable financial assets" value={money(summary.investable_financial_assets,summary.display_currency)} /><MetricCard label="Allocated to goals" value={money(summary.total_allocated,summary.display_currency)} /><MetricCard label="Unallocated remainder" value={money(summary.unallocated_remainder,summary.display_currency)} /></div>{summary.over_allocated && <div className="error">Goal allocations exceed investable financial assets. This is a warning only; allocations are not blocked.</div>}<div className="panelHeader"><h2>Goals</h2><button className="primaryButton" onClick={() => edit()}><Target size={16}/> Add goal</button></div>
+  {form && <section className="panel"><h2>{editing ? "Edit goal" : "New goal"}</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Target month<input type="month" value={form.target_month} onChange={e=>setForm({...form,target_month:e.target.value})}/></label><label>Target amount<input type="number" value={form.target_amount} onChange={e=>setForm({...form,target_amount:Number(e.target.value)})}/></label><label>Target currency<CurrencyInput value={form.target_currency} onChange={v=>setForm({...form,target_currency:v})} currencies={currency.supported_currencies}/></label><label>Manual allocation<input type="number" value={form.allocated_amount} onChange={e=>setForm({...form,allocated_amount:Number(e.target.value)})}/></label><label>Allocation currency<CurrencyInput value={form.allocated_currency} onChange={v=>setForm({...form,allocated_currency:v})} currencies={currency.supported_currencies}/></label><label>Monthly contribution<input type="number" value={form.monthly_contribution} onChange={e=>setForm({...form,monthly_contribution:Number(e.target.value)})}/></label><label>Contribution currency<CurrencyInput value={form.contribution_currency} onChange={v=>setForm({...form,contribution_currency:v})} currencies={currency.supported_currencies}/></label><label>Priority<input type="number" value={form.priority ?? ""} onChange={e=>setForm({...form,priority:e.target.value ? Number(e.target.value) : null})}/></label><label>Description<input value={form.description ?? ""} onChange={e=>setForm({...form,description:e.target.value})}/></label></div><div className="buttonRow left"><button className="primaryButton" onClick={save}>Save goal</button><button className="secondary" onClick={()=>setForm(null)}>Cancel</button></div>{error&&<div className="error">{error}</div>}</section>}
   <section className="panel"><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Progress</th><th>Target</th><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{summary.goals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{pct(g.funding_progress)}</td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 function CurrencyInput({value,onChange,currencies}:{value:string;onChange:(v:string)=>void;currencies:string[]}) { return <select value={value} onChange={e=>onChange(e.target.value)}>{currencies.map(c=><option key={c}>{c}</option>)}</select>; }
@@ -2173,7 +2218,8 @@ function Settings({
   brokers,
   positions,
   onSettingsChanged,
-  onCleaned
+  onCleaned,
+  onReset
 }: {
   auth: AuthStatus;
   positionCount: number;
@@ -2187,6 +2233,7 @@ function Settings({
   positions: Position[];
   onSettingsChanged: () => Promise<void>;
   onCleaned: (text: string) => Promise<void>;
+  onReset: () => void;
 }) {
   const [settingsPage, setSettingsPage] = useState<"general" | "brokers" | "fx" | "projections" | "fees" | "allocation-types">(initialPage);
   return (
@@ -2195,7 +2242,7 @@ function Settings({
       {settingsPage === "brokers" && <BrokerSettings brokers={brokers} onChanged={onSettingsChanged} />}
       {settingsPage === "fx" && <FxSettings currency={currency} fxRates={fxRates} onChanged={onSettingsChanged} />}
       {settingsPage === "allocation-types" && <AllocationCategorySettings categories={categories} onChanged={onSettingsChanged} />}
-      {settingsPage === "projections" && <ProjectionSettings assumptions={assumptions} targets={allocationTargets} categories={categories} onChanged={onSettingsChanged} />}
+      {settingsPage === "projections" && <ProjectionSettings assumptions={assumptions} targets={allocationTargets} categories={categories} currency={currency?.display_currency || "USD"} onChanged={onSettingsChanged} />}
       {settingsPage === "fees" && currency && <FeesPage positions={positions} currency={currency.display_currency} />}
       {settingsPage === "general" && <>
       <div className="panel settings">
@@ -2219,7 +2266,8 @@ function Settings({
           </div>
         </div>
       </div>
-      <DatabaseTools onCleaned={onCleaned} />
+      <PasswordSettings />
+      <DatabaseTools onCleaned={onCleaned} onReset={onReset} />
       </>}
     </section>
   );
@@ -2258,10 +2306,10 @@ export function BrokerSettings({ brokers, onChanged }: { brokers: Broker[]; onCh
     <div className="lockGrid"><strong>Default locked fields</strong><span>Imports inherit these locks; users can override them for one import.</span>{lockableFields.map(field => <label key={field}><input type="checkbox" checked={draft.locked_fields.includes(field)} onChange={e => setDraft({ ...draft, locked_fields: e.target.checked ? [...draft.locked_fields, field] : draft.locked_fields.filter(item => item !== field) })}/>{fieldLabels[field]}</label>)}</div>
     <div className="buttonRow left"><button className={jsonMode ? "secondary" : ""} onClick={() => { setJsonMode(false); setJsonText(JSON.stringify(draft, null, 2)); }}>Visual editor</button><button className={jsonMode ? "" : "secondary"} onClick={() => { setJsonMode(true); setJsonText(JSON.stringify(draft, null, 2)); }}>Advanced JSON</button></div>
     {jsonMode ? <><label>Broker configuration JSON<textarea className="jsonEditor" value={jsonText} onChange={e => setJsonText(e.target.value)} /></label><div className="buttonRow left"><button className="secondary" onClick={applyJson}>Apply JSON</button></div></> : <div className="stack"><div className="formGrid"><label>Header names (comma-separated)<input value={headerText} onChange={e => { setHeaderText(e.target.value); setPreview(null); }}/></label></div><div className="mappingGrid">{Object.entries(fieldLabels).map(([field, label]) => <label key={field}>{label}<select value={draft.mappings[field] || ""} onChange={e => { const mappings = e.target.value ? {...draft.mappings, [field]: e.target.value} : Object.fromEntries(Object.entries(draft.mappings).filter(([key]) => key !== field)); setDraft({...draft, mappings}); setPreview(null); }}><option value="">Not mapped</option>{headers.map(header => <option key={header}>{header}</option>)}</select></label>)}</div></div>}
-    <div className="buttonRow left"><button disabled={!sampleCsv || busy} onClick={runPreview}><RefreshCw size={16}/> Preview configuration</button><button className="secondary" disabled={busy} onClick={save}><Save size={16}/> Save broker</button></div>{error && <div className="error">{error}</div>}{preview && <><div className={preview.valid ? "notice" : "errorList"}>{preview.valid ? `${preview.rows.length} normalized security rows are valid.` : preview.errors.map(item => <div key={item}>{item}</div>)}</div><p className="disclosure">Showing the first 25 normalized rows. Each column shows canonical field ← CSV column.</p><div className="tableWrap"><table><thead><tr><th>Row</th>{Object.entries(preview.mappings).map(([field, column]) => <th key={field}>{fieldLabels[field] || field}<br/><small>← {column}</small></th>)}</tr></thead><tbody>{preview.rows.slice(0,25).map(row=><tr key={row.row_number}><td>{row.row_number}</td>{Object.keys(preview.mappings).map(field => <td key={field}>{String((row as unknown as Record<string, unknown>)[field] ?? "—")}</td>)}</tr>)}</tbody></table></div>{preview.invalid_rows.length>0&&<div className="errorList">{preview.invalid_rows.map(row=><div key={row.row_number}>Row {row.row_number}: {Object.values(row.field_errors).flat().join(" ")}</div>)}</div>}</>}</section></section>;
+    <div className="buttonRow left"><button className="secondary" disabled={!sampleCsv || busy} onClick={runPreview}><RefreshCw size={16}/> Preview configuration</button><button className="primaryButton" disabled={busy} onClick={save}><Save size={16}/> Save broker</button></div>{error && <div className="error">{error}</div>}{preview && <><div className={preview.valid ? "notice" : "errorList"}>{preview.valid ? `${preview.rows.length} normalized security rows are valid.` : preview.errors.map(item => <div key={item}>{item}</div>)}</div><p className="disclosure">Showing the first 25 normalized rows. Each column shows canonical field ← CSV column.</p><div className="tableWrap"><table><thead><tr><th>Row</th>{Object.entries(preview.mappings).map(([field, column]) => <th key={field}>{fieldLabels[field] || field}<br/><small>← {column}</small></th>)}</tr></thead><tbody>{preview.rows.slice(0,25).map(row=><tr key={row.row_number}><td>{row.row_number}</td>{Object.keys(preview.mappings).map(field => <td key={field}>{String((row as unknown as Record<string, unknown>)[field] ?? "—")}</td>)}</tr>)}</tbody></table></div>{preview.invalid_rows.length>0&&<div className="errorList">{preview.invalid_rows.map(row=><div key={row.row_number}>Row {row.row_number}: {Object.values(row.field_errors).flat().join(" ")}</div>)}</div>}</>}</section></section>;
 }
 
-function ProjectionSettings({ assumptions, targets, categories, onChanged }: { assumptions: FinancialAssumptions | null; targets: AllocationTarget[]; categories: string[]; onChanged: () => Promise<void> }) {
+function ProjectionSettings({ assumptions, targets, categories, currency, onChanged }: { assumptions: FinancialAssumptions | null; targets: AllocationTarget[]; categories: string[]; currency: string; onChanged: () => Promise<void> }) {
   const [form, setForm] = useState<FinancialAssumptions>(assumptions || {});
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setForm(assumptions || {}), [assumptions]);
@@ -2272,8 +2320,8 @@ function ProjectionSettings({ assumptions, targets, categories, onChanged }: { a
     ["short_term_tax_rate", "Short-term indicative tax", "percent"], ["long_term_tax_rate", "Long-term indicative tax", "percent"], ["long_term_holding_days", "Long-term holding days", "days"]
   ];
   return <section className="panel"><h2>Expenses & Projections</h2><p>Forecasts become available after return, volatility, inflation, and monthly contribution are completed. Values are assumptions, not advice.</p>
-    <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{label}<input type="number" min="0" step="0.01" value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
-    <div className="buttonRow left"><button onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}
+    <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{kind === "amount" ? `${label} (${currency})` : label}<input type="number" min="0" step="0.01" value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
+    <div className="buttonRow left"><button className="primaryButton" onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}
     <AllocationTargetSettings targets={targets} categories={categories} onChanged={onChanged} />
   </section>;
 }
@@ -2283,16 +2331,18 @@ function AllocationTargetSettings({ targets, categories, onChanged }: { targets:
   const [rows, setRows] = useState<AllocationTarget[]>([]); const [error, setError] = useState<string | null>(null);
   useEffect(() => setRows(targets.filter(t => t.dimension === dimension)), [targets, dimension]);
   async function save() { try { setError(null); await api.saveAllocationTargets(dimension, rows.map(r => ({...r, dimension}))); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Targets must total 100%."); } }
+  const total = rows.reduce((sum, row) => sum + (Number.isFinite(row.target_percent) ? row.target_percent : 0), 0);
   return <div className="stack"><div className="panelHeader"><h3>Allocation policy</h3><select value={dimension} onChange={e => setDimension(e.target.value)}><option value="asset_category">Asset category</option><option value="country">Country</option><option value="currency">Currency</option></select></div><p>Each target set totals 100%. The allowed range is target ± tolerance; policy guardrails do not create trade orders.</p>
+  <label>Allocation complete: {total.toFixed(1)}%<progress value={Math.min(100, Math.max(0, total))} max="100" /></label>
   {rows.map((row, i) => <div className="formGrid" key={`${row.label}-${i}`}><label>Label{dimension === "asset_category" ? <select value={row.label} onChange={e => setRows(rows.map((r, n) => n === i ? {...r,label:e.target.value} : r))}><option value="">Select category</option>{categories.map(category => <option key={category}>{category}</option>)}</select> : <input value={row.label} onChange={e => setRows(rows.map((r, n) => n === i ? {...r, label:e.target.value} : r))}/>}</label><label>Target %<input type="number" min="0" max="100" value={row.target_percent} onChange={e => setRows(rows.map((r,n) => n === i ? {...r,target_percent:Number(e.target.value)} : r))}/></label><label>Tolerance (± points)<input type="number" min="0" max="100" value={row.tolerance_percent} onChange={e => setRows(rows.map((r,n) => n === i ? {...r,tolerance_percent:Number(e.target.value)} : r))}/></label><button className="secondary" onClick={() => setRows(rows.filter((_,n) => n !== i))}>Remove</button></div>)}
-  <div className="buttonRow left"><button className="secondary" onClick={() => setRows([...rows, {dimension,label:"",target_percent:0,tolerance_percent:10}])}>Add target</button><button onClick={save}>Save policy</button></div>{error && <div className="error">{error}</div>}</div>;
+  <div className="buttonRow left"><button className="secondary" onClick={() => setRows([...rows, {dimension,label:"",target_percent:0,tolerance_percent:10}])}>Add target</button><button className="primaryButton" onClick={save}>Save policy</button></div>{error && <div className="error">{error}</div>}</div>;
 }
 
 function AllocationCategorySettings({ categories, onChanged }: { categories: string[]; onChanged: () => Promise<void> }) {
   const [name, setName] = useState(""); const [error, setError] = useState<string | null>(null);
   async function add() { try { setError(null); await api.createAllocationCategory(name); setName(""); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not add allocation type."); } }
   async function remove(category: string) { try { setError(null); await api.deleteAllocationCategory(category); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not delete allocation type."); } }
-  return <section className="panel"><h2>Allocation types</h2><p>Create categories for manual positions and asset-category policy targets. A type cannot be removed while it is used by a current holding or policy.</p><div className="buttonRow left"><input value={name} placeholder="New allocation type" onChange={e => setName(e.target.value)} /><button disabled={!name.trim()} onClick={add}><Plus size={16}/>Add type</button></div>{error && <div className="error">{error}</div>}<div className="tableWrap"><table><tbody>{categories.map(category => <tr key={category}><td>{category}</td><td><button className="secondary" onClick={() => remove(category)}><Trash2 size={15}/>Delete</button></td></tr>)}</tbody></table></div></section>;
+  return <section className="panel"><h2>Allocation types</h2><p>Create categories for manual positions and asset-category policy targets. A type cannot be removed while it is used by a current holding or policy.</p><div className="buttonRow left"><input value={name} placeholder="New allocation type" onChange={e => setName(e.target.value)} /><button className="primaryButton" disabled={!name.trim()} onClick={add}><Plus size={16}/>Add type</button></div>{error && <div className="error">{error}</div>}<div className="tableWrap"><table><tbody>{categories.map(category => <tr key={category}><td>{category}</td><td><button className="secondary" onClick={() => remove(category)}><Trash2 size={15}/>Delete</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function FxSettings({
@@ -2388,7 +2438,7 @@ function FxSettings({
         </label>
       </div>
       <div className="buttonRow left">
-        <button className="secondary" disabled={busy || !rate || Number(rate) <= 0} onClick={saveRate}>
+        <button className="primaryButton" disabled={busy || !rate || Number(rate) <= 0} onClick={saveRate}>
           Save Manual FX Rate
         </button>
       </div>
@@ -2408,7 +2458,39 @@ function FxSettings({
   );
 }
 
-function DatabaseTools({ onCleaned }: { onCleaned: (message: string) => Promise<void> }) {
+function PasswordSettings() {
+  const [newPassphrase, setNewPassphrase] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function changePassphrase(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null); setMessage(null);
+    if (newPassphrase.length < 8) { setError("Use at least 8 characters."); return; }
+    if (newPassphrase !== confirmation) { setError("The new password and confirmation do not match."); return; }
+    setBusy(true);
+    try {
+      await api.changePassphrase(newPassphrase);
+      setNewPassphrase(""); setConfirmation("");
+      setMessage("Password changed. Your portfolio was re-encrypted and this session was refreshed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change the password.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section className="panel"><h2>Change encryption password</h2><p>Your saved data will be re-encrypted with the new password. You will stay signed in.</p>
+    <form className="stack" onSubmit={changePassphrase}>
+      <div className="formGrid"><label>New password<input type="password" autoComplete="new-password" value={newPassphrase} onChange={event => setNewPassphrase(event.target.value)} /></label><label>Confirm new password<input type="password" autoComplete="new-password" value={confirmation} onChange={event => setConfirmation(event.target.value)} /></label></div>
+      <div className="buttonRow left"><button className="primaryButton" disabled={busy}>Change password</button></div>
+    </form>{message && <div className="notice">{message}</div>}{error && <div className="error">{error}</div>}
+  </section>;
+}
+
+function DatabaseTools({ onCleaned, onReset }: { onCleaned: (message: string) => Promise<void>; onReset: () => void }) {
   const [confirmations, setConfirmations] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2445,7 +2527,7 @@ function DatabaseTools({ onCleaned }: { onCleaned: (message: string) => Promise<
     {
       scope: "all",
       title: "Clear All Data",
-      description: "Deletes brokerage, static banking, real estate, and private equity data. Settings, FX rates, and encryption setup remain.",
+      description: "Deletes every saved item, including brokers, FX rates, display/settings data, and the encryption password. You will need to set up the app again.",
       phrase: "ALL DATA"
     }
   ];
@@ -2456,7 +2538,8 @@ function DatabaseTools({ onCleaned }: { onCleaned: (message: string) => Promise<
     try {
       const result = await api.cleanDatabaseScope(scope);
       setConfirmations({});
-      await onCleaned(result.message);
+      if (result.reset) onReset();
+      else await onCleaned(result.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Database clean failed.");
     } finally {
@@ -2468,7 +2551,7 @@ function DatabaseTools({ onCleaned }: { onCleaned: (message: string) => Promise<
     <section className="panel dangerPanel">
       <h2>Clean Database</h2>
       <p>
-        Delete selected data sets. Broker definitions, encryption settings, display currency, and FX rates remain available.
+        Scoped cleanup preserves settings. Clear All Data removes every saved setting and the encryption setup.
       </p>
       <div className="cleanGrid">
         {options.map((option) => {
@@ -2549,7 +2632,7 @@ export function FeesPage({positions,currency}:{positions:Position[];currency:str
   async function addFee(){setBusy(true);try{await api.createPortfolioFee(form);setForm(blank);await load();}catch(e){setError(e instanceof Error?e.message:"Could not save portfolio fee.");}finally{setBusy(false);}}
   async function saveReserve(){await api.saveFeeSettings({cash_reserve_months:reserveMonths});await load();}
   return <section className="stack"><section className="panel"><div className="panelHeader"><div><p className="eyebrow">Manual values are authoritative</p><h2>Security expense ratios</h2></div></div><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Expense ratio %</th><th>Source</th><th>Freshness</th><th></th></tr></thead><tbody>{securityFees.map(row=><tr key={row.security_id}><td>{row.security_name}</td><td><input type="number" min="0" step="0.001" value={ratios[row.security_id]??""} onChange={e=>setRatios({...ratios,[row.security_id]:e.target.value})}/></td><td>{row.source}</td><td>{row.stale?"Stale / missing":"Current"}</td><td><div className="buttonRow compact"><button disabled={busy} onClick={()=>saveRatio(row.security_id)}>Save manual</button><button className="secondary" disabled={busy} onClick={()=>publicRatio(row.security_id)}>Public draft</button><button className="secondary" disabled={busy||!publicDrafts.has(row.security_id)} onClick={()=>acceptRatio(row.security_id)}>Accept public</button></div></td></tr>)}</tbody></table></div>{message&&<div className="notice">{message}</div>}{error&&<div className="error">{error}</div>}</section>
-    <section className="panel"><h2>Advisory and account fees</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Type<select value={form.fee_type} onChange={e=>setForm({...form,fee_type:e.target.value as PortfolioFeeInput["fee_type"]})}><option value="advisory_percent">Advisory percentage</option><option value="fixed_account">Fixed account fee</option></select></label>{form.fee_type==="advisory_percent"?<label>Annual %<input type="number" min="0" step="0.01" value={form.annual_percent??""} onChange={e=>setForm({...form,annual_percent:Number(e.target.value),annual_amount:null})}/></label>:<><label>Annual amount<input type="number" min="0" value={form.annual_amount??""} onChange={e=>setForm({...form,annual_amount:Number(e.target.value),annual_percent:null})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{supportedCurrencies.map(c=><option key={c}>{c}</option>)}</select></label></>}</div><button disabled={busy||!form.name.trim()} onClick={addFee}><Plus size={15}/>Add fee</button>{analysis&&<div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Annual charge</th><th>Status</th><th></th></tr></thead><tbody>{analysis.portfolio_fees.map(fee=><tr key={fee.id}><td>{fee.name}</td><td>{fee.fee_type.replace("_"," ")}</td><td>{fee.fee_type==="advisory_percent"?pct(fee.annual_percent):money(fee.annual_amount,fee.currency)}</td><td>{fee.enabled?"Active":"Paused"}</td><td><div className="buttonRow compact"><button className="secondary" onClick={async()=>{await api.updatePortfolioFee(fee.id,{name:fee.name,fee_type:fee.fee_type,annual_percent:fee.annual_percent,annual_amount:fee.annual_amount,currency:fee.currency,enabled:!fee.enabled});await load();}}>{fee.enabled?"Pause":"Enable"}</button><button className="iconOnly" onClick={async()=>{await api.deletePortfolioFee(fee.id);await load();}}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table></div>}</section>
-    <section className="panel"><h2>Cash reserve</h2><div className="formGrid"><label>Reserve target (months of expenses)<input type="number" min="0" value={reserveMonths} onChange={e=>setReserveMonths(Number(e.target.value))}/></label></div><button onClick={saveReserve}>Save reserve target</button></section>
+    <section className="panel"><h2>Advisory and account fees</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Type<select value={form.fee_type} onChange={e=>setForm({...form,fee_type:e.target.value as PortfolioFeeInput["fee_type"]})}><option value="advisory_percent">Advisory percentage</option><option value="fixed_account">Fixed account fee</option></select></label>{form.fee_type==="advisory_percent"?<label>Annual %<input type="number" min="0" step="0.01" value={form.annual_percent??""} onChange={e=>setForm({...form,annual_percent:Number(e.target.value),annual_amount:null})}/></label>:<><label>Annual amount ({form.currency})<input type="number" min="0" value={form.annual_amount??""} onChange={e=>setForm({...form,annual_amount:Number(e.target.value),annual_percent:null})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{supportedCurrencies.map(c=><option key={c}>{c}</option>)}</select></label></>}</div><button disabled={busy||!form.name.trim()} onClick={addFee}><Plus size={15}/>Add fee</button>{analysis&&<div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Annual charge</th><th>Status</th><th></th></tr></thead><tbody>{analysis.portfolio_fees.map(fee=><tr key={fee.id}><td>{fee.name}</td><td>{fee.fee_type.replace("_"," ")}</td><td>{fee.fee_type==="advisory_percent"?pct(fee.annual_percent):money(fee.annual_amount,fee.currency)}</td><td>{fee.enabled?"Active":"Paused"}</td><td><div className="buttonRow compact"><button className="secondary" onClick={async()=>{await api.updatePortfolioFee(fee.id,{name:fee.name,fee_type:fee.fee_type,annual_percent:fee.annual_percent,annual_amount:fee.annual_amount,currency:fee.currency,enabled:!fee.enabled});await load();}}>{fee.enabled?"Pause":"Enable"}</button><button className="iconOnly" onClick={async()=>{await api.deletePortfolioFee(fee.id);await load();}}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table></div>}</section>
+    <section className="panel"><h2>Cash reserve</h2><div className="formGrid"><label>Reserve target (months of expenses in {currency})<input type="number" min="0" value={reserveMonths} onChange={e=>setReserveMonths(Number(e.target.value))}/></label></div><button onClick={saveReserve}>Save reserve target</button></section>
     {analysis&&<><div className="metricGrid"><MetricCard label="Estimated annual fees" value={money(analysis.total_annual_fees,analysis.display_currency)}/><MetricCard label="Annual fee share" value={pct(analysis.annual_fee_percent)}/><MetricCard label="Fund expenses" value={money(analysis.annual_fund_expenses,analysis.display_currency)}/><MetricCard label="Advisory + fixed" value={money(analysis.annual_advisory_fees+analysis.annual_fixed_fees,analysis.display_currency)}/><MetricCard label="Potential idle cash" value={analysis.potential_idle_cash==null?"Set expenses":money(analysis.potential_idle_cash,analysis.display_currency)}/><MetricCard label="Potential annual cash drag" value={analysis.potential_cash_drag==null?"Set return":money(analysis.potential_cash_drag,analysis.display_currency)}/></div><section className="panel"><h2>Long-term cost projection</h2><div className="tableWrap"><table><thead><tr><th>Horizon</th><th>Nominal fees paid</th><th>Ending value before fees</th><th>Ending value after fees</th><th>Opportunity cost</th></tr></thead><tbody>{analysis.projections.map(row=><tr key={row.years}><td>{row.years} years</td><td>{money(row.cumulative_nominal_fees,analysis.display_currency)}</td><td>{money(row.ending_value_without_fees,analysis.display_currency)}</td><td>{money(row.ending_value_after_fees,analysis.display_currency)}</td><td>{money(row.opportunity_cost,analysis.display_currency)}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{analysis.warnings.map(w=><li key={w}>{w}</li>)}</ul></section></>}</section>;
 }

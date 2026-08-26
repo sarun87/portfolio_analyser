@@ -1,10 +1,12 @@
+import pytest
+
 from backend.app.core.encryption import generate_salt, key_manager
 from backend.app.db.schema import init_db
 from backend.app.services.asset_service import create_real_estate_asset, create_static_account
 from backend.app.services.broker_service import preview_broker_configuration, save_broker
 from backend.app.services.import_service import commit_statement, preview_statement
 from backend.app.services.models import BrokerDraft, ImportCommitRequest, ImportPreviewRequest, RealEstateAssetCreate, StaticAccountCreate
-from backend.app.services.portfolio_service import dashboard, list_positions, profit_loss, update_position
+from backend.app.services.portfolio_service import dashboard, list_positions, profit_loss, update_position, update_positions
 from backend.app.services.models import PositionUpdate
 from backend.app.services.repositories import clean_brokerage_data
 
@@ -52,6 +54,7 @@ def test_configured_import_populates_dashboard_and_current_positions(sqlite_conn
     result = commit_statement(sqlite_conn, request_for(sqlite_conn, broker, CSV, "2026-06-30"))
     assert result.imported_rows == 3
     assert {p.symbol for p in list_positions(sqlite_conn)} == {"AAPL", "VTI", "CASH"}
+    assert next(p for p in list_positions(sqlite_conn) if p.symbol == "AAPL").security_type == "Equity"
     analytics = dashboard(sqlite_conn)
     assert analytics.brokerage_value == 4250
     assert {point.label for point in analytics.asset_allocation} >= {"Large Cap", "Hybrid Fund", "Cash"}
@@ -96,6 +99,49 @@ def test_import_currency_and_manual_position_update_keep_native_values(sqlite_co
     ))
     assert (updated.total_cost_basis, updated.per_unit_fmv, updated.total_fmv) == (400, 225, 900)
     assert profit_loss(sqlite_conn)[0].currency == "INR"
+
+
+def test_position_update_can_move_to_an_encrypted_broker_account(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    broker = broker_for(sqlite_conn, CSV)
+    commit_statement(sqlite_conn, request_for(sqlite_conn, broker, CSV, "2026-06-30"))
+    original = next(position for position in list_positions(sqlite_conn) if position.symbol == "AAPL")
+    original_account_id = sqlite_conn.execute("SELECT account_id FROM positions WHERE id=?", (original.id,)).fetchone()[0]
+    updated = update_position(sqlite_conn, original.id, PositionUpdate(
+        account_number="A-9999", security_name=original.security_name, symbol=original.symbol,
+        security_type=original.security_type, allocation_category=original.allocation_category,
+        sector=original.sector, exchange=original.exchange, investment_country=original.investment_country,
+        snapshot_date=original.snapshot_date, units=original.units,
+        per_unit_cost_basis=original.per_unit_cost_basis, total_cost_basis=original.total_cost_basis,
+        per_unit_fmv=original.per_unit_fmv, total_fmv=original.total_fmv, currency=original.currency,
+    ))
+    assert (updated.account_number, updated.account_mask) == ("A-9999", "****9999")
+    assert sqlite_conn.execute("SELECT COUNT(*) FROM accounts WHERE account_mask = '****9999'").fetchone()[0] == 1
+    target_account_id = sqlite_conn.execute("SELECT id FROM accounts WHERE account_mask = '****9999'").fetchone()[0]
+    assert sqlite_conn.execute("SELECT COUNT(*) FROM positions WHERE account_id=?", (original_account_id,)).fetchone()[0] == 0
+    assert sqlite_conn.execute("SELECT COUNT(*) FROM statement_imports WHERE account_id=?", (original_account_id,)).fetchone()[0] == 0
+    assert sqlite_conn.execute("SELECT COUNT(*) FROM positions WHERE account_id=?", (target_account_id,)).fetchone()[0] == 3
+    assert sqlite_conn.execute("SELECT COUNT(*) FROM statement_imports WHERE account_id=?", (target_account_id,)).fetchone()[0] == 1
+
+
+def test_bulk_position_update_rolls_back_every_item_after_a_validation_failure(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    broker = broker_for(sqlite_conn, CSV)
+    commit_statement(sqlite_conn, request_for(sqlite_conn, broker, CSV, "2026-06-30"))
+    original = next(position for position in list_positions(sqlite_conn) if position.symbol == "AAPL")
+    valid = PositionUpdate(
+        security_name=original.security_name, symbol=original.symbol, security_type=original.security_type,
+        allocation_category=original.allocation_category, sector=original.sector, exchange=original.exchange,
+        investment_country=original.investment_country, snapshot_date=original.snapshot_date, units=99,
+        per_unit_cost_basis=original.per_unit_cost_basis, total_cost_basis=original.total_cost_basis,
+        per_unit_fmv=original.per_unit_fmv, total_fmv=original.total_fmv, currency=original.currency,
+    )
+    invalid = valid.model_copy(update={"security_name": ""})
+
+    with pytest.raises(ValueError, match="not found"):
+        update_positions(sqlite_conn, [(original.id, valid), (999999, invalid)])
+
+    assert sqlite_conn.execute("SELECT units FROM positions WHERE id=?", (original.id,)).fetchone()[0] == original.units
 
 
 def test_brokerage_cleaning_preserves_config_and_net_worth_includes_other_assets(sqlite_conn):

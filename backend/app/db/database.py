@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
+from cryptography.fernet import Fernet
+
 from backend.app.core.encryption import EncryptionError, key_manager
 from backend.app.core.config import DATABASE_PATH, ensure_data_dir
 
@@ -52,6 +54,31 @@ class EncryptedDatabase:
             if self._connection is not None:
                 self._connection.close()
                 self._connection = None
+
+    def encrypted_snapshot(self, fernet: Fernet) -> bytes:
+        """Return the current in-memory database encrypted by a replacement key."""
+        with self._lock:
+            if self._connection is None:
+                raise EncryptionError("Portfolio database is locked.")
+            self._connection.commit()
+            dump = "\n".join(self._connection.iterdump()).encode("utf-8")
+            return fernet.encrypt(dump)
+
+    def replace_encrypted_snapshot(self, encrypted: bytes) -> None:
+        with self._lock:
+            ensure_data_dir()
+            temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+            temporary.write_bytes(encrypted)
+            os.chmod(temporary, 0o600)
+            temporary.replace(self.path)
+
+    def discard(self) -> None:
+        """Close the in-memory database and permanently remove its encrypted snapshot."""
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            self.path.unlink(missing_ok=True)
 
     def _persist(self) -> None:
         if self._connection is None:

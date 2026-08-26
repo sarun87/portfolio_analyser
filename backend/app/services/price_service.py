@@ -6,20 +6,45 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date
+from typing import Optional
 
+from backend.app.core.external_api_logging import open_external_url
+from backend.app.services.location_service import normalize_exchange
 from backend.app.services.models import PriceRefreshResult
 from backend.app.services.repositories import record_price
 
 
 PROVIDER = "yahoo-chart"
 GOOGLE_PROVIDER = "google-finance-html"
+YAHOO_SUFFIXES = {"NSE": ".NS", "BSE": ".BO", "LSE": ".L", "SIX": ".SW", "SWX": ".SW", "ASX": ".AX", "TSX": ".TO"}
+GOOGLE_EXCHANGES = {
+    "LSE": "LON", "LONDON": "LON", "NASDAQ": "NASDAQ", "NYSE": "NYSE", "NYSEARCA": "NYSEARCA",
+    "NSE": "NSE", "BSE": "BOM", "SIX": "SWX", "SWX": "SWX", "ASX": "ASX", "TSX": "TSE",
+    "TSE": "TYO", "HKSE": "HKG", "XETRA": "ETR",
+}
+
+
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def yahoo_candidates(symbol: str, exchange: Optional[str]) -> list[str]:
+    base = symbol.strip().upper()
+    suffix = YAHOO_SUFFIXES.get(normalize_exchange(exchange).upper())
+    return _unique([f"{base}{suffix}" if suffix and "." not in base else base, base])
+
+
+def google_candidates(symbol: str, exchange: Optional[str]) -> list[str]:
+    base = symbol.strip().upper()
+    google_exchange = GOOGLE_EXCHANGES.get(normalize_exchange(exchange).upper())
+    return _unique([f"{base}:{google_exchange}" if google_exchange and ":" not in base else base, base])
 
 
 def fetch_yahoo_price(symbol: str) -> float:
     encoded = urllib.parse.quote(symbol)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=1d&interval=1d"
     request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0"})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with open_external_url(request, provider=PROVIDER, timeout=10, opener=urllib.request.urlopen) as response:
         payload = json.loads(response.read().decode("utf-8"))
     result = payload.get("chart", {}).get("result", [])
     if not result:
@@ -42,17 +67,20 @@ def fetch_yahoo_price(symbol: str) -> float:
 
 
 def fetch_google_finance_price(symbol: str) -> float:
-    """Best-effort HTML fallback, used only after a valid Yahoo payload has no quote."""
+    """Fetch the primary quote, never a market-index quote from the page chrome."""
     url = f"https://www.google.com/finance/quote/{urllib.parse.quote(symbol)}"
     request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0 (+local portfolio tracker)"})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with open_external_url(request, provider=GOOGLE_PROVIDER, timeout=10, opener=urllib.request.urlopen) as response:
         html = response.read().decode("utf-8", errors="replace")
-    # Google currently marks the primary quote with this class.  Keep a
-    # conservative numeric validation rather than accepting arbitrary text.
-    match = re.search(r'class="YMlKec[^" ]*"[^>]*>\s*([0-9][0-9,]*(?:\.\d+)?)', html)
+    # `fxKbKc` distinguishes the instrument quote from sidebar/index values
+    # which also use `YMlKec` (CSPX:LON is a concrete example).
+    match = re.search(r'class="(?=[^"]*\bYMlKec\b)(?=[^"]*\bfxKbKc\b)[^"]*"[^>]*>\s*([^<]+)', html)
     if not match:
         raise ValueError("Google Finance page did not include a usable quote.")
-    price = float(match.group(1).replace(",", ""))
+    numeric = re.search(r"[0-9][0-9,]*(?:\.\d+)?", match.group(1))
+    if not numeric:
+        raise ValueError("Google Finance page did not include a numeric quote.")
+    price = float(numeric.group(0).replace(",", ""))
     if not math.isfinite(price) or price <= 0:
         raise ValueError("Google Finance page included an invalid price.")
     return price
@@ -60,7 +88,7 @@ def fetch_google_finance_price(symbol: str) -> float:
 
 def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefreshResult:
     row = conn.execute(
-        "SELECT id, symbol, price_refresh_supported FROM securities WHERE id = ?",
+        "SELECT id, symbol, exchange, price_refresh_supported FROM securities WHERE id = ?",
         (security_id,),
     ).fetchone()
     if not row:
@@ -72,23 +100,30 @@ def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefresh
             refreshed=False,
             message="Security has no refreshable symbol.",
         )
-    try:
-        price = fetch_yahoo_price(row["symbol"])
-        provider = PROVIDER
-    except ValueError as yahoo_exc:
-        # A parseable Yahoo response without a quote is a distinct condition;
-        # network/JSON failures do not cause a second remote request.
+    yahoo_errors = []
+    price = None
+    for candidate in yahoo_candidates(row["symbol"], row["exchange"]):
         try:
-            price = fetch_google_finance_price(row["symbol"])
-            provider = GOOGLE_PROVIDER
-        except (urllib.error.URLError, TimeoutError, ValueError) as google_exc:
-            return PriceRefreshResult(security_id=security_id, symbol=row["symbol"], refreshed=False, message=f"Yahoo: {yahoo_exc} Google Finance: {google_exc}")
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            price = fetch_yahoo_price(candidate)
+            provider = PROVIDER
+            break
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            yahoo_errors.append(f"{candidate}: {exc}")
+    if price is None:
+        google_errors = []
+        for candidate in google_candidates(row["symbol"], row["exchange"]):
+            try:
+                price = fetch_google_finance_price(candidate)
+                provider = GOOGLE_PROVIDER
+                break
+            except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+                google_errors.append(f"{candidate}: {exc}")
+    if price is None:
         return PriceRefreshResult(
             security_id=security_id,
             symbol=row["symbol"],
             refreshed=False,
-            message=str(exc),
+            message=f"Yahoo: {'; '.join(yahoo_errors)} Google Finance: {'; '.join(google_errors)}",
         )
 
     if not math.isfinite(price) or price <= 0:

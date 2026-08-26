@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 
+from backend.app.core.external_api_logging import open_external_url
 from backend.app.services.models import (
     ExposureAnalysis, ExposureRow, FundComposition, FundCompositionInput,
     FundConstituentInput, FundOverlap, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerCandidate, PeerResearch,
@@ -114,7 +115,7 @@ def fetch_public_metadata(symbol: str) -> dict:
     encoded = urllib.parse.quote(symbol)
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{encoded}?modules={modules}"
     request = urllib.request.Request(url, headers={"User-Agent": "portfolio-analyser/1.0"})
-    with urllib.request.urlopen(request, timeout=12) as response:
+    with open_external_url(request, provider="yahoo-quote-summary", timeout=12, opener=urllib.request.urlopen) as response:
         payload = json.loads(response.read().decode("utf-8"))
     results = payload.get("quoteSummary", {}).get("result") or []
     if not results:
@@ -225,10 +226,10 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _fetch_html(url: str) -> str:
+def _fetch_html(url: str, provider: str) -> str:
     request = urllib.request.Request(_public_url(url), headers={"User-Agent": "portfolio-analyser/1.0 (+local personal research)"})
     opener = urllib.request.build_opener(_SafeRedirect())
-    with opener.open(request, timeout=12) as response:
+    with open_external_url(request, provider=provider, timeout=12, opener=opener.open) as response:
         if int(response.headers.get("Content-Length") or 0) > 1_500_000: raise ValueError("The source page is too large to sync.")
         raw = response.read(1_500_001)
     if len(raw) > 1_500_000: raise ValueError("The source page is too large to sync.")
@@ -285,7 +286,7 @@ def preview_public_metadata(conn: sqlite3.Connection, security_id: int, source: 
         raise ValueError("Security has no public-data symbol.")
     try:
         source_url, provider = _html_source_url(row["symbol"], source, custom_url)
-        holdings, facts, as_of_date, warnings = _parse_html(_fetch_html(source_url))
+        holdings, facts, as_of_date, warnings = _parse_html(_fetch_html(source_url, provider))
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         raise ValueError(f"Public HTML sync failed: {exc}") from exc
     fetched = datetime.now(timezone.utc).isoformat()
@@ -360,7 +361,8 @@ def research_peers(conn: sqlite3.Connection, security_id: int) -> PeerResearch:
     retrieved = datetime.now(timezone.utc).isoformat(); warnings=[]; candidates=[]
     try:
         url = "https://query1.finance.yahoo.com/v1/finance/search?q=" + urllib.parse.quote((held.category if held and held.category else security["name"])) + "&quotesCount=12&newsCount=0"
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent":"portfolio-analyser/1.0"}), timeout=12) as response: results=json.loads(response.read().decode()).get("quotes") or []
+        request = urllib.request.Request(url, headers={"User-Agent":"portfolio-analyser/1.0"})
+        with open_external_url(request, provider="yahoo-search", timeout=12, opener=urllib.request.urlopen) as response: results=json.loads(response.read().decode()).get("quotes") or []
         for quote in results:
             symbol = str(quote.get("symbol") or "").upper()
             if not symbol or symbol == security["symbol"].upper() or quote.get("quoteType") not in {"ETF", "MUTUALFUND"}: continue

@@ -16,6 +16,7 @@ Local-first portfolio statement analyser for configurable CSV broker exports.
 - Runs preset and custom portfolio stress tests across market, rate, currency, allocation-category, and security-level shocks.
 - Expands manually supplied or explicitly approved fund holdings into effective company, sector, geography, currency, and asset-class exposure, including fund overlap and unmapped coverage.
 - Estimates volatility, drawdown, correlation, beta, and holding-level risk contribution from cached five-year adjusted histories, with manual security, benchmark, and FX imports for offline use.
+- Records outbound Yahoo Finance, Google Finance, and Frankfurter calls in `logs/external_api.log`, including provider, status, and duration. Logs rotate at 10 MB with seven files retained; URLs are recorded without queries and no response data or headers are logged.
 - Tracks fund expense ratios, advisory fees, named account fees, reserve-aware cash drag, and 1/10/20/30-year nominal and opportunity costs.
 - Resolves each listed security's exchange and investment country at import, with manual correction when a ticker cannot be resolved.
 - Supports per-import field locks to retain selected prior holding values such as cost basis.
