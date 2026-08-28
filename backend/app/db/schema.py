@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS saved_scenarios (
 CREATE TABLE IF NOT EXISTS fund_compositions (
   security_id INTEGER PRIMARY KEY REFERENCES securities(id) ON DELETE CASCADE,
   source TEXT NOT NULL DEFAULT 'manual',
+  source_url TEXT,
+  holdings_scope TEXT NOT NULL DEFAULT 'full',
   as_of_date TEXT,
   reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -189,6 +191,7 @@ CREATE TABLE IF NOT EXISTS fund_constituents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   fund_security_id INTEGER NOT NULL REFERENCES fund_compositions(security_id) ON DELETE CASCADE,
   constituent_key TEXT NOT NULL,
+  identifier TEXT,
   linked_security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL,
   symbol TEXT,
   name TEXT NOT NULL,
@@ -339,6 +342,9 @@ def _baseline_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "brokers", "mappings_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "brokers", "configuration_version", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(conn, "allocation_targets", "tolerance_percent", "REAL NOT NULL DEFAULT 10")
+    _ensure_column(conn, "fund_compositions", "source_url", "TEXT")
+    _ensure_column(conn, "fund_compositions", "holdings_scope", "TEXT NOT NULL DEFAULT 'full'")
+    _ensure_column(conn, "fund_constituents", "identifier", "TEXT")
 
 
 def _allocation_categories(conn: sqlite3.Connection) -> None:
@@ -361,7 +367,13 @@ def _allocation_categories(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT OR IGNORE INTO allocation_categories (name) VALUES (?)", (name,))
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories))
+def _composition_provenance(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "fund_compositions", "source_url", "TEXT")
+    _ensure_column(conn, "fund_compositions", "holdings_scope", "TEXT NOT NULL DEFAULT 'full'")
+    _ensure_column(conn, "fund_constituents", "identifier", "TEXT")
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

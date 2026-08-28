@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.app.db.schema import init_db
-from backend.app.services.exposure_service import exposure_analysis, get_composition, preview_public_metadata, save_composition
+from backend.app.services.exposure_service import _html_source_url, _parse_holdings_csv, exposure_analysis, get_composition, preview_public_metadata, save_composition
 from backend.app.services.advanced_findings import advanced_findings
 from backend.app.services.fee_service import (
     fee_analysis, list_security_fees, save_fee_settings, save_portfolio_fee, save_security_fee,
@@ -90,6 +90,39 @@ def test_public_metadata_is_a_draft_and_does_not_overwrite_manual_composition(ad
         with pytest.raises(ValueError, match="offline"):
             preview_public_metadata(conn, fund_a)
     assert get_composition(conn, fund_a).constituents == before.constituents
+
+
+def test_generic_holdings_csv_parser_preserves_stable_identity_and_classification():
+    raw = """iShares Fund\nFund Holdings as of,01/31/2026\nIssuer Ticker,Name,Sector,Asset Class,Weight (%),ISIN,Location,Market Currency\nAAPL,APPLE INC,Information Technology,Equity,7.15,US0378331005,United States,USD\nMSFT,MICROSOFT CORP,Information Technology,Equity,6.90,US5949181045,United States,USD\n"""
+    holdings, as_of, warnings = _parse_holdings_csv(raw, "iShares")
+    assert as_of == "2026-01-31"
+    assert not warnings
+    assert holdings[0].identifier == "US0378331005"
+    assert holdings[0].country == "United States"
+    assert holdings[0].asset_category == "Equity"
+
+
+def test_generic_vanguard_csv_parser_accepts_holding_column_variants():
+    raw = """Vanguard holdings\nHoldings as of,2026-01-31\nHolding Ticker,Holding Name,% of Net Assets,CUSIP,Sector\nAAPL,Apple Inc.,6.12,037833100,Technology\nMSFT,Microsoft Corp.,5.43,594918104,Technology\n"""
+    holdings, as_of, warnings = _parse_holdings_csv(raw, "Vanguard")
+    assert as_of == "2026-01-31"
+    assert not warnings
+    assert holdings[0].identifier == "037833100"
+    assert holdings[0].symbol == "AAPL"
+
+
+@pytest.mark.parametrize(("source", "url"), [
+    ("ishares_csv", "https://www.ishares.com/uk/individual/en/literature/holdings.csv"),
+    ("vanguard_csv", "https://investor.vanguard.com/investment-products/etfs/profile/holdings.csv"),
+])
+def test_provider_csv_urls_allow_their_provider_domains(source, url):
+    assert _html_source_url("FUND", source, url)[0] == url
+
+
+@pytest.mark.parametrize("source", ["ishares_csv", "vanguard_csv"])
+def test_provider_csv_urls_reject_unrelated_hosts(source):
+    with pytest.raises(ValueError, match="approved"):
+        _html_source_url("FUND", source, "https://example.com/holdings.csv")
 
 
 def _prices(start: float, daily_returns: list[float]):

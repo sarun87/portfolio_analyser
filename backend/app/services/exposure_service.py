@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import csv
 import ipaddress
+import io
 import re
 import sqlite3
 import socket
@@ -16,9 +18,10 @@ from html.parser import HTMLParser
 from backend.app.core.external_api_logging import open_external_url
 from backend.app.services.models import (
     ExposureAnalysis, ExposureRow, FundComposition, FundCompositionInput,
-    FundConstituentInput, FundOverlap, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerCandidate, PeerResearch,
+    FundConstituentInput, FundOverlap, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerCandidate, PeerResearch, InsightAllocationRow,
 )
 from backend.app.services.portfolio_service import list_positions
+from backend.app.services.insight_service import list_targets
 
 
 PUBLIC_PROVIDER = "html-sync"
@@ -42,14 +45,15 @@ def list_compositions(conn: sqlite3.Connection) -> list[FundComposition]:
     result: list[FundComposition] = []
     for header in conn.execute("SELECT * FROM fund_compositions ORDER BY security_id"):
         items = [FundConstituentInput(**dict(row)) for row in conn.execute(
-            """SELECT constituent_key, linked_security_id, symbol, name, weight_percent, sector,
+            """SELECT constituent_key, identifier, linked_security_id, symbol, name, weight_percent, sector,
                       country, currency, asset_category
                FROM fund_constituents WHERE fund_security_id=? ORDER BY weight_percent DESC, name""",
             (header["security_id"],),
         )]
         result.append(FundComposition(
             security_id=header["security_id"], security_name=securities.get(header["security_id"], "Unknown fund"),
-            source=header["source"], as_of_date=header["as_of_date"], reviewed_at=header["reviewed_at"],
+            source=header["source"], source_url=header["source_url"], holdings_scope=header["holdings_scope"],
+            as_of_date=header["as_of_date"], reviewed_at=header["reviewed_at"],
             constituents=items, coverage_percent=sum(item.weight_percent for item in items),
             stale=_is_stale(header["as_of_date"], header["reviewed_at"]),
         ))
@@ -91,17 +95,17 @@ def save_composition(conn: sqlite3.Connection, security_id: int, payload: FundCo
         raise ValueError("Fund compositions cannot contain a direct or indirect cycle.")
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        """INSERT INTO fund_compositions(security_id, source, as_of_date, reviewed_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO fund_compositions(security_id, source, source_url, holdings_scope, as_of_date, reviewed_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(security_id) DO UPDATE SET source=excluded.source, as_of_date=excluded.as_of_date,
-             reviewed_at=excluded.reviewed_at, updated_at=excluded.updated_at""",
-        (security_id, payload.source.strip() or "manual", payload.as_of_date, now, now),
+             source_url=excluded.source_url, holdings_scope=excluded.holdings_scope, reviewed_at=excluded.reviewed_at, updated_at=excluded.updated_at""",
+        (security_id, payload.source.strip() or "manual", payload.source_url, payload.holdings_scope, payload.as_of_date, now, now),
     )
     conn.execute("DELETE FROM fund_constituents WHERE fund_security_id=?", (security_id,))
     conn.executemany(
-        """INSERT INTO fund_constituents(fund_security_id, constituent_key, linked_security_id, symbol, name,
-             weight_percent, sector, country, currency, asset_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        [(security_id, item.constituent_key.strip(), item.linked_security_id,
+        """INSERT INTO fund_constituents(fund_security_id, constituent_key, identifier, linked_security_id, symbol, name,
+             weight_percent, sector, country, currency, asset_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [(security_id, item.constituent_key.strip(), item.identifier.strip().upper() if item.identifier else None, item.linked_security_id,
           item.symbol.upper().strip() if item.symbol else None, item.name.strip(), item.weight_percent * weight_scale,
           item.sector.strip() or "Unclassified", item.country.strip() or "Unresolved",
           item.currency.upper().strip() or "Unresolved", item.asset_category.strip() or "Unclassified")
@@ -273,11 +277,74 @@ def _parse_html(html: str) -> tuple[list[FundConstituentInput], dict, str | None
     return holdings, {key:value for key,value in facts.items() if value is not None}, as_of_date, warnings
 
 
+def _parse_holdings_csv(raw: str, provider_label: str) -> tuple[list[FundConstituentInput], str | None, list[str]]:
+    """Parse public iShares/Vanguard holdings CSVs without fund-specific rules."""
+    lines = raw.lstrip("\ufeff").splitlines()
+    header_index = next((index for index, line in enumerate(lines)
+                         if "name" in line.lower() and ("weight" in line.lower() or "net assets" in line.lower())), None)
+    if header_index is None:
+        raise ValueError(f"This does not look like a {provider_label} holdings CSV (Name and Weight columns are required).")
+    as_of_date = None
+    for line in lines[:header_index]:
+        match = re.search(r"(?:as of|holdings as of)\D*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})", line, re.I)
+        if not match:
+            continue
+        for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d", "%m-%d-%Y", "%d-%m-%Y"):
+            try:
+                as_of_date = datetime.strptime(match.group(1), fmt).date().isoformat()
+                break
+            except ValueError:
+                pass
+        if as_of_date:
+            break
+    reader = csv.DictReader(io.StringIO("\n".join(lines[header_index:])))
+    holdings: list[FundConstituentInput] = []
+    warnings: list[str] = []
+    for row in reader:
+        normalized = {(key or "").strip().lower(): (value or "").strip() for key, value in row.items()}
+        name = normalized.get("name") or normalized.get("security name") or normalized.get("holding name")
+        raw_weight = (normalized.get("weight (%)") or normalized.get("weight") or normalized.get("weight percent")
+                      or normalized.get("% of net assets") or normalized.get("percent of net assets"))
+        if not name or not raw_weight:
+            continue
+        try:
+            weight = float(raw_weight.replace("%", "").replace(",", ""))
+        except ValueError:
+            continue
+        if not 0 < weight <= 100:
+            continue
+        identifier = next((normalized.get(key) for key in ("isin", "sedol", "cusip") if normalized.get(key)), None)
+        symbol = next((normalized.get(key) for key in ("issuer ticker", "holding ticker", "ticker", "symbol") if normalized.get(key)), None)
+        constituent_key = identifier or symbol or name
+        if any(item.constituent_key.lower() == constituent_key.lower() for item in holdings):
+            continue
+        holdings.append(FundConstituentInput(
+            constituent_key=constituent_key, identifier=identifier, symbol=symbol, name=name, weight_percent=weight,
+            sector=normalized.get("sector") or "Unclassified",
+            country=normalized.get("location") or normalized.get("country") or "Unresolved",
+            currency=normalized.get("market currency") or normalized.get("currency") or "Unresolved",
+            asset_category=normalized.get("asset class") or "Unclassified",
+        ))
+    if not holdings:
+        warnings.append(f"No weighted constituents were found in the {provider_label} CSV.")
+    return holdings, as_of_date, warnings
+
+
 def _html_source_url(symbol: str, source: str, custom_url: str | None) -> tuple[str, str]:
+    def provider_csv_url(url: str | None, domains: tuple[str, ...], provider_name: str) -> str:
+        if not url:
+            raise ValueError(f"Provide a public {provider_name} holdings CSV URL.")
+        hostname = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
+        if not any(hostname == domain or hostname.endswith(f".{domain}") for domain in domains):
+            raise ValueError(f"The {provider_name} CSV URL must use an approved {provider_name} domain.")
+        return url
+
     if source == "yahoo_html": return f"https://finance.yahoo.com/quote/{urllib.parse.quote(symbol)}/holdings", "yahoo-html"
     if source == "google_finance_html": return f"https://www.google.com/finance/quote/{urllib.parse.quote(symbol)}:NYSE", "google-finance-html"
     if source == "custom_url" and custom_url: return custom_url, "custom-html"
-    raise ValueError("Choose Yahoo Finance, Google Finance, or provide a custom public URL.")
+    if source == "ishares_csv": return provider_csv_url(custom_url, ("ishares.com",), "iShares"), "ishares-csv"
+    if source == "vanguard_csv": return provider_csv_url(custom_url, ("vanguard.com",), "Vanguard"), "vanguard-csv"
+    raise ValueError("Choose Yahoo Finance, Google Finance, iShares CSV, Vanguard CSV, or provide a custom public URL.")
 
 
 def preview_public_metadata(conn: sqlite3.Connection, security_id: int, source: str = "yahoo_html", custom_url: str | None = None) -> PublicMetadataPreview:
@@ -286,12 +353,18 @@ def preview_public_metadata(conn: sqlite3.Connection, security_id: int, source: 
         raise ValueError("Security has no public-data symbol.")
     try:
         source_url, provider = _html_source_url(row["symbol"], source, custom_url)
-        holdings, facts, as_of_date, warnings = _parse_html(_fetch_html(source_url, provider))
+        raw = _fetch_html(source_url, provider)
+        if source in {"ishares_csv", "vanguard_csv"}:
+            holdings, as_of_date, warnings = _parse_holdings_csv(raw, "iShares" if source == "ishares_csv" else "Vanguard")
+            facts = {}
+        else:
+            holdings, facts, as_of_date, warnings = _parse_html(raw)
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         raise ValueError(f"Public HTML sync failed: {exc}") from exc
     fetched = datetime.now(timezone.utc).isoformat()
     expense = facts.get("expense_ratio_percent")
-    cache_payload = {"composition": FundCompositionInput(source=provider, as_of_date=as_of_date, constituents=holdings).model_dump() if holdings else None,
+    scope = "full" if source in {"ishares_csv", "vanguard_csv"} else "top_10"
+    cache_payload = {"composition": FundCompositionInput(source=provider, source_url=source_url, holdings_scope=scope, as_of_date=as_of_date, constituents=holdings).model_dump() if holdings else None,
                      "as_of_date": as_of_date, "expense_ratio_percent": expense, "facts": facts, "source_url": source_url, "warnings": warnings}
     conn.execute("""INSERT INTO reference_cache(cache_key, provider, payload_json, fetched_at)
                     VALUES (?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json,
@@ -301,7 +374,7 @@ def preview_public_metadata(conn: sqlite3.Connection, security_id: int, source: 
         security_id=security_id, provider=provider, fetched_at=fetched, as_of_date=as_of_date,
         composition=FundCompositionInput(**cache_payload["composition"]) if holdings else None, facts=facts,
         expense_ratio_percent=expense if isinstance(expense, (int, float)) else None,
-        source_url=source_url, warnings=warnings, holdings_count=len(holdings),
+        source_url=source_url, warnings=warnings, holdings_count=len(holdings), holdings_scope=scope,
         message="Review this public HTML draft before accepting it. Holdings and facts are best effort.",
     )
 
@@ -315,6 +388,7 @@ def cached_public_preview(conn: sqlite3.Connection, security_id: int) -> PublicM
         security_id=security_id, provider=row["provider"], fetched_at=row["fetched_at"], as_of_date=payload.get("as_of_date"),
         composition=FundCompositionInput(**payload["composition"]) if payload.get("composition") else None,
         expense_ratio_percent=payload.get("expense_ratio_percent"), facts=payload.get("facts") or {}, source_url=payload.get("source_url"), warnings=payload.get("warnings") or [], holdings_count=len((payload.get("composition") or {}).get("constituents") or []),
+        holdings_scope=(payload.get("composition") or {}).get("holdings_scope", "top_10"),
         message="Cached public-data draft. Accept only after review.",
     )
 
@@ -480,7 +554,8 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
                     for key, value in nested.items():
                         result[key] += value
                     continue
-            result[(item.symbol or item.constituent_key).upper()] += weight
+            # ISIN/SEDOL/CUSIP is preferred over a ticker: tickers can be reused across markets.
+            result[(item.identifier or item.symbol or item.constituent_key).upper()] += weight
         return result
     for fund_id in compositions:
         flattened[fund_id] = flatten(fund_id)
@@ -510,6 +585,10 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
         warnings.append(f"Stale composition metadata: {', '.join(stale)}.")
     if any(item.coverage_percent < 99.99 for key, item in compositions.items() if key in relevant_ids):
         warnings.append("Partial fund compositions retain their uncovered weight as Unmapped; exposure totals are not normalized.")
+    top_ten = [item.security_name for key, item in compositions.items()
+               if key in relevant_ids and item.holdings_scope == "top_10"]
+    if top_ten:
+        warnings.append(f"Top-10-only compositions may understate overlap and exposure: {', '.join(top_ten)}.")
     missing = [item["name"] for item in funds if item["id"] not in compositions]
     if missing:
         warnings.append(f"No look-through composition is available for: {', '.join(missing)}.")
@@ -517,8 +596,30 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
     mapped_fund_value = sum(item["value"] * min(100, sum(flattened[item["id"]].values())) / 100
                             for item in funds if item["id"] in compositions)
     coverage = mapped_fund_value / fund_value * 100 if fund_value else 100.0
+    policy_drift: dict[str, list[InsightAllocationRow]] = {}
+    dimension_map = {"asset_category": "asset_category", "country": "country", "currency": "currency"}
+    for dimension, exposure_dimension in dimension_map.items():
+        actual = {row.label: row.value for row in rows(exposure_dimension)}
+        policy_drift[dimension] = [InsightAllocationRow(
+            label=target.label, actual_amount=actual.get(target.label, 0),
+            actual_percent=actual.get(target.label, 0) / total * 100 if total else 0,
+            target_percent=target.target_percent, tolerance_percent=target.tolerance_percent,
+            minimum_percent=max(0, target.target_percent - target.tolerance_percent),
+            maximum_percent=min(100, target.target_percent + target.tolerance_percent),
+            drift_percent=(actual.get(target.label, 0) / total * 100 if total else 0) - target.target_percent,
+            rebalance_amount=total * target.target_percent / 100 - actual.get(target.label, 0),
+            compliant=max(0, target.target_percent - target.tolerance_percent) <= (actual.get(target.label, 0) / total * 100 if total else 0) <= min(100, target.target_percent + target.tolerance_percent),
+            outside_range_percent=(max(0, target.target_percent - target.tolerance_percent) - (actual.get(target.label, 0) / total * 100 if total else 0)
+                                   if (actual.get(target.label, 0) / total * 100 if total else 0) < max(0, target.target_percent - target.tolerance_percent)
+                                   else (actual.get(target.label, 0) / total * 100 if total else 0) - min(100, target.target_percent + target.tolerance_percent)
+                                   if (actual.get(target.label, 0) / total * 100 if total else 0) > min(100, target.target_percent + target.tolerance_percent) else 0),
+            policy_gap_amount=total * (max(0, target.target_percent - target.tolerance_percent) - (actual.get(target.label, 0) / total * 100 if total else 0)) / 100
+            if (actual.get(target.label, 0) / total * 100 if total else 0) < max(0, target.target_percent - target.tolerance_percent)
+            else total * ((actual.get(target.label, 0) / total * 100 if total else 0) - min(100, target.target_percent + target.tolerance_percent)) / 100
+            if (actual.get(target.label, 0) / total * 100 if total else 0) > min(100, target.target_percent + target.tolerance_percent) else 0,
+        ) for target in list_targets(conn, dimension)]
     return ExposureAnalysis(display_currency=positions[0].display_currency if positions else "USD", portfolio_value=total,
                             composition_coverage_percent=coverage, company=rows("company"), sector=rows("sector"),
                             country=rows("country"), currency=rows("currency"), asset_category=rows("asset_category"),
                             overlaps=sorted(overlaps, key=lambda item: item.overlap_percent, reverse=True),
-                            compositions=[compositions[key] for key in sorted(held_fund_ids & set(compositions))], warnings=warnings)
+                            compositions=[compositions[key] for key in sorted(held_fund_ids & set(compositions))], policy_drift=policy_drift, warnings=warnings)

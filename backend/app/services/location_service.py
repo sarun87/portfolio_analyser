@@ -38,7 +38,13 @@ def normalize_exchange(value: Optional[str]) -> str:
     if not text:
         return "Unresolved"
     upper = text.upper()
-    aliases = {"NASDAQGS": "NASDAQ", "NASDAQCM": "NASDAQ", "NASDAQGM": "NASDAQ", "NYSE ARCA": "NYSEARCA", "NSE INDIA": "NSE", "BSE INDIA": "BSE", "SIX SWISS EXCHANGE": "SIX", "LSEIOB": "LSE"}
+    aliases = {
+        "NASDAQGS": "NASDAQ", "NASDAQCM": "NASDAQ", "NASDAQGM": "NASDAQ", "NYSE ARCA": "NYSEARCA",
+        "NSE INDIA": "NSE", "NATIONAL STOCK EXCHANGE": "NSE", "NATIONAL STOCK EXCHANGE OF INDIA": "NSE",
+        "BSE INDIA": "BSE", "BOMBAY STOCK EXCHANGE": "BSE", "BSE LIMITED": "BSE",
+        "SIX SWISS EXCHANGE": "SIX", "LSEIOB": "LSE", "LONDON": "LSE", "LON": "LSE", "XLON": "LSE",
+        "LONDON STOCK EXCHANGE": "LSE", "LONDON STOCK EXCHANGE PLC": "LSE", "LONDON STOCK EXCHANGE GROUP": "LSE",
+    }
     return aliases.get(upper, text)
 
 

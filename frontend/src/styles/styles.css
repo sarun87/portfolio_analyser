@@ -73,6 +73,10 @@ button.primaryButton:focus-visible {
   outline-offset: 2px;
 }
 
+button.brokerCommitButton {
+  box-shadow: 0 3px 8px rgba(37, 99, 235, 0.38);
+}
+
 button.iconOnly {
   aspect-ratio: 1;
   background: #fff;
@@ -846,6 +850,20 @@ button.dangerButton {
   background: #60a5fa;
   border-color: #60a5fa;
   color: #0f172a;
+}
+
+[data-theme="dark"] button.brokerCommitButton {
+  box-shadow: 0 3px 10px rgba(96, 165, 250, 0.42);
+}
+
+[data-theme="dark"] label {
+  color: #f1f5f9;
+}
+
+[data-theme="dark"] label small,
+[data-theme="dark"] .fieldHelp,
+[data-theme="dark"] .fieldHelpIntro {
+  color: #cbd5e1;
 }
 
 [data-theme="dark"] .segmented {

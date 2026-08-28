@@ -29,7 +29,6 @@ npm run build
 
 cd "$ROOT_DIR"
 mkdir -p data
-mkdir -p logs
 
 echo "Portfolio Analyser is initialized."
 echo "Start it with:"

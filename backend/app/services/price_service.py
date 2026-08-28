@@ -36,7 +36,14 @@ def yahoo_candidates(symbol: str, exchange: Optional[str]) -> list[str]:
 
 def google_candidates(symbol: str, exchange: Optional[str]) -> list[str]:
     base = symbol.strip().upper()
-    google_exchange = GOOGLE_EXCHANGES.get(normalize_exchange(exchange).upper())
+    normalized_exchange = normalize_exchange(exchange).upper()
+    google_exchange = GOOGLE_EXCHANGES.get(normalized_exchange)
+    yahoo_suffix = YAHOO_SUFFIXES.get(normalized_exchange)
+    # Imports may already contain Yahoo-style listing symbols (for example
+    # CSPX.L). Google Finance expects the base symbol plus its own exchange
+    # code (CSPX:LON), not the Yahoo suffix.
+    if yahoo_suffix and base.endswith(yahoo_suffix):
+        base = base[:-len(yahoo_suffix)]
     return _unique([f"{base}:{google_exchange}" if google_exchange and ":" not in base else base, base])
 
 

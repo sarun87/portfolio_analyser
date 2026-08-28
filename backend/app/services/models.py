@@ -639,6 +639,7 @@ class StressTestResult(BaseModel):
 
 class FundConstituentInput(BaseModel):
     constituent_key: str = Field(min_length=1, max_length=200)
+    identifier: Optional[str] = Field(default=None, max_length=100)
     linked_security_id: Optional[int] = None
     symbol: Optional[str] = None
     name: str = Field(min_length=1, max_length=300)
@@ -651,6 +652,8 @@ class FundConstituentInput(BaseModel):
 
 class FundCompositionInput(BaseModel):
     source: str = "manual"
+    source_url: Optional[str] = None
+    holdings_scope: str = "full"
     as_of_date: Optional[str] = None
     constituents: list[FundConstituentInput] = Field(default_factory=list)
 
@@ -674,6 +677,7 @@ class PublicMetadataPreview(BaseModel):
     source_url: Optional[str] = None
     warnings: list[str] = Field(default_factory=list)
     holdings_count: int = 0
+    holdings_scope: str = "top_10"
     message: str
 
 
@@ -796,6 +800,7 @@ class ExposureAnalysis(BaseModel):
     asset_category: list[ExposureRow]
     overlaps: list[FundOverlap]
     compositions: list[FundComposition]
+    policy_drift: dict[str, list[InsightAllocationRow]] = Field(default_factory=dict)
     warnings: list[str]
 
 

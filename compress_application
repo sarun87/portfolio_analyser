@@ -22,8 +22,9 @@ if [[ "$MODE" == "--full" || "$MODE" == "full" ]]; then
   echo "  $ARCHIVE_PATH"
   tar \
     --exclude="./archives" \
-    --exclude="./data" \
-    --exclude="./logs" \
+    --exclude="./data/portfolio.db.encrypted" \
+    --exclude="./data/auth.json" \
+    --exclude="./data/*.tmp" \
     -czf "$ARCHIVE_PATH" \
     -C "$ROOT_DIR/.." \
     "$APP_NAME"

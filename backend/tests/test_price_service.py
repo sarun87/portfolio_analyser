@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.app.db.schema import init_db
-from backend.app.services.price_service import fetch_google_finance_price, fetch_yahoo_price, refresh_security
+from backend.app.services.price_service import fetch_google_finance_price, fetch_yahoo_price, google_candidates, refresh_security, yahoo_candidates
 from backend.app.services.portfolio_service import list_positions
 from backend.app.services.insight_service import snapshot_comparison
 
@@ -105,6 +105,17 @@ def test_cspx_uses_google_london_quote_after_yahoo_failure(priced_security):
     assert google.call_args_list[0].args == ("CSPX:LON",)
     stored = conn.execute("SELECT price, provider FROM price_history").fetchone()
     assert (stored["price"], stored["provider"]) == (827.78, "google-finance-html")
+
+
+@pytest.mark.parametrize("symbol", ["CSPX", "CNDX", "IWDA", "EIMI", "VDTA"])
+def test_lse_funds_resolve_to_yahoo_and_google_london_identifiers(symbol):
+    assert yahoo_candidates(symbol, "London Stock Exchange") == [f"{symbol}.L", symbol]
+    assert google_candidates(symbol, "London Stock Exchange") == [f"{symbol}:LON", symbol]
+
+
+@pytest.mark.parametrize("symbol", ["CSPX.L", "CNDX.L", "IWDA.L", "EIMI.L", "VDTA.L"])
+def test_lse_yahoo_suffix_is_removed_before_building_google_identifier(symbol):
+    assert google_candidates(symbol, "LSE") == [f"{symbol[:-2]}:LON", symbol[:-2]]
 
 
 def test_valid_refresh_preserves_snapshot_and_overlays_latest_position_value(priced_security):
