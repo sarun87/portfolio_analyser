@@ -366,9 +366,25 @@ class FinancialAssumptions(BaseModel):
     inflation_rate: Optional[float] = Field(default=None, ge=-1, le=10)
     monthly_household_contribution: Optional[float] = Field(default=None, ge=0)
     monthly_expenses: Optional[float] = Field(default=None, ge=0)
+    current_age: Optional[int] = Field(default=None, ge=0, le=120)
+    end_age: int = Field(default=85, ge=1, le=130)
     short_term_tax_rate: Optional[float] = Field(default=None, ge=0, le=1)
     long_term_tax_rate: Optional[float] = Field(default=None, ge=0, le=1)
     long_term_holding_days: Optional[int] = Field(default=365, ge=1, le=36500)
+
+
+class ScheduledExpenseInput(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    expense_type: str
+    amount: float = Field(ge=0)
+    currency: str
+    expense_date: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class ScheduledExpense(ScheduledExpenseInput):
+    id: int
 
 
 class AllocationTarget(BaseModel):
@@ -415,7 +431,6 @@ class Goal(GoalBase):
     allocated_amount_display: float
     monthly_contribution_display: float
     display_currency: str
-    funding_progress: Optional[float] = None
     projected_value: Optional[float] = None
     projected_shortfall_surplus: Optional[float] = None
     required_monthly_contribution: Optional[float] = None

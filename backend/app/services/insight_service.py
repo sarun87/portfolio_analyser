@@ -10,7 +10,7 @@ from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount
 from backend.app.services.models import (
     AllocationTarget, FinancialAssumptions, Goal, GoalCreate, GoalUpdate, GoalsSummary,
     AllocationPolicySummary, AnalyticsPoint, InsightAllocationRow, InsightFinding, InsightTaxLot, Insights,
-    SnapshotAllocationShift, SnapshotComparison, SnapshotHoldingChange, TimeSeriesPoint,
+    SnapshotAllocationShift, SnapshotComparison, SnapshotHoldingChange, TimeSeriesPoint, ScheduledExpense, ScheduledExpenseInput,
 )
 from backend.app.services.portfolio_service import list_positions
 from backend.app.services.repositories import get_setting, set_setting
@@ -18,7 +18,7 @@ from backend.app.services.repositories import get_setting, set_setting
 
 ASSUMPTION_FIELDS = [
     "expected_annual_return", "annual_volatility", "inflation_rate", "monthly_household_contribution",
-    "monthly_expenses", "short_term_tax_rate", "long_term_tax_rate", "long_term_holding_days",
+    "monthly_expenses", "current_age", "end_age", "short_term_tax_rate", "long_term_tax_rate", "long_term_holding_days",
 ]
 
 
@@ -28,6 +28,8 @@ def get_assumptions(conn: sqlite3.Connection) -> FinancialAssumptions:
 
 
 def save_assumptions(conn: sqlite3.Connection, payload: FinancialAssumptions) -> FinancialAssumptions:
+    if payload.current_age is not None and payload.end_age <= payload.current_age:
+        raise ValueError("End age must be greater than current age.")
     values = [getattr(payload, field) for field in ASSUMPTION_FIELDS]
     conn.execute(
         f"INSERT INTO financial_assumptions (id, {', '.join(ASSUMPTION_FIELDS)}) VALUES (1, {', '.join(['?'] * len(ASSUMPTION_FIELDS))}) "
@@ -35,6 +37,51 @@ def save_assumptions(conn: sqlite3.Connection, payload: FinancialAssumptions) ->
         values,
     )
     return get_assumptions(conn)
+
+
+def _validate_scheduled_expense(payload: ScheduledExpenseInput) -> None:
+    if not payload.name.strip():
+        raise ValueError("Expense name is required.")
+    if payload.expense_type not in {"one_time", "date_range"}:
+        raise ValueError("Expense type must be one_time or date_range.")
+    if payload.currency.upper() not in SUPPORTED_CURRENCIES:
+        raise ValueError("Unsupported expense currency.")
+    try:
+        if payload.expense_type == "one_time":
+            if not payload.expense_date:
+                raise ValueError("A one-time expense requires a date.")
+            datetime.strptime(payload.expense_date, "%Y-%m-%d")
+        else:
+            if not payload.start_date or not payload.end_date:
+                raise ValueError("A date-range expense requires a start and end date.")
+            start, end = datetime.strptime(payload.start_date, "%Y-%m-%d").date(), datetime.strptime(payload.end_date, "%Y-%m-%d").date()
+            if end < start:
+                raise ValueError("Expense end date must not be before its start date.")
+    except ValueError as exc:
+        if str(exc).startswith("Expense") or str(exc).startswith("A "):
+            raise
+        raise ValueError("Expense dates must use YYYY-MM-DD.") from exc
+
+
+def list_scheduled_expenses(conn: sqlite3.Connection) -> list[ScheduledExpense]:
+    return [ScheduledExpense(**dict(row)) for row in conn.execute("SELECT * FROM scheduled_expenses ORDER BY COALESCE(expense_date, start_date), id")]
+
+
+def save_scheduled_expense(conn: sqlite3.Connection, payload: ScheduledExpenseInput, expense_id: int | None = None) -> ScheduledExpense:
+    _validate_scheduled_expense(payload)
+    values = (payload.name.strip(), payload.expense_type, payload.amount, payload.currency.upper(), payload.expense_date, payload.start_date, payload.end_date)
+    if expense_id is None:
+        expense_id = conn.execute("INSERT INTO scheduled_expenses(name, expense_type, amount, currency, expense_date, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?)", values).lastrowid
+    else:
+        if not conn.execute("SELECT 1 FROM scheduled_expenses WHERE id=?", (expense_id,)).fetchone():
+            raise ValueError("Scheduled expense not found.")
+        conn.execute("UPDATE scheduled_expenses SET name=?, expense_type=?, amount=?, currency=?, expense_date=?, start_date=?, end_date=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", values + (expense_id,))
+    return next(item for item in list_scheduled_expenses(conn) if item.id == expense_id)
+
+
+def delete_scheduled_expense(conn: sqlite3.Connection, expense_id: int) -> None:
+    if not conn.execute("DELETE FROM scheduled_expenses WHERE id=?", (expense_id,)).rowcount:
+        raise ValueError("Scheduled expense not found.")
 
 
 def list_targets(conn: sqlite3.Connection, dimension: Optional[str] = None) -> list[AllocationTarget]:
@@ -77,8 +124,16 @@ def _months_until(target_month: str) -> int:
     return max(0, (target.year - today.year) * 12 + target.month - today.month)
 
 
+def _goal_projection_ready(a: FinancialAssumptions) -> bool:
+    return all(getattr(a, field) is not None for field in ("expected_annual_return", "annual_volatility"))
+
+
 def _projection_ready(a: FinancialAssumptions) -> bool:
     return all(getattr(a, field) is not None for field in ("expected_annual_return", "annual_volatility", "inflation_rate", "monthly_household_contribution"))
+
+
+def _lifetime_projection_ready(a: FinancialAssumptions) -> bool:
+    return _projection_ready(a) and a.current_age is not None and a.end_age > a.current_age and a.monthly_expenses is not None
 
 
 def _goal_from_row(conn: sqlite3.Connection, row, assumptions: FinancialAssumptions) -> Goal:
@@ -88,16 +143,17 @@ def _goal_from_row(conn: sqlite3.Connection, row, assumptions: FinancialAssumpti
     allocated = convert_amount(conn, row["allocated_amount"], row["allocated_currency"], display) or 0
     contribution = convert_amount(conn, row["monthly_contribution"], row["contribution_currency"], display) or 0
     result.update(target_amount_display=target, allocated_amount_display=allocated, monthly_contribution_display=contribution, display_currency=display)
-    result["funding_progress"] = allocated / target * 100 if target else None
-    if _projection_ready(assumptions):
+    if _goal_projection_ready(assumptions):
         months = _months_until(row["target_month"])
         monthly_return = (1 + assumptions.expected_annual_return) ** (1 / 12) - 1
         projected = allocated * (1 + monthly_return) ** months + contribution * (((1 + monthly_return) ** months - 1) / monthly_return if monthly_return else months)
-        target_future = target * (1 + assumptions.inflation_rate) ** (months / 12)
-        result.update(projected_value=projected, projected_shortfall_surplus=projected - target_future)
+        result.update(
+            projected_value=projected,
+            projected_shortfall_surplus=projected - target,
+        )
         factor = ((1 + monthly_return) ** months - 1) / monthly_return if monthly_return else months
-        result["required_monthly_contribution"] = max(0, (target_future - allocated * (1 + monthly_return) ** months) / factor) if factor else max(0, target_future - allocated)
-        result["probability_of_reaching"] = _goal_probability(allocated, contribution, target_future, months, assumptions)
+        result["required_monthly_contribution"] = max(0, (target - allocated * (1 + monthly_return) ** months) / factor) if factor else max(0, target - allocated)
+        result["probability_of_reaching"] = _goal_probability(allocated, contribution, target, months, assumptions)
     return Goal(**result)
 
 
@@ -210,7 +266,8 @@ def insights(conn: sqlite3.Connection) -> Insights:
     holding_change = _holding_change(conn, display)
     drawdown = _drawdown(history)
     rolling = {str(m): _growth(history, m) for m in (1, 3, 12)}
-    forecast = _forecast(total, a) if _projection_ready(a) else None
+    financial_assets = total + sum(convert_amount(conn, r["amount"], r["currency"], display) or 0 for r in static if r["category"] in ("Bank Account", "Retirement Account"))
+    forecast = _forecast(financial_assets, a, list_scheduled_expenses(conn), conn, display) if _lifetime_projection_ready(a) else None
     runway = immediate/a.monthly_expenses if a.monthly_expenses else None
     comparison = snapshot_comparison(conn)
     policy_rows = [row for rows in drifts.values() for row in rows]
@@ -258,7 +315,7 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
                     evidence=[f"Actual: {row.actual_percent:.1f}%", f"Target: {row.target_percent:.1f}% ± {row.tolerance_percent:.1f} points", f"Allowed range: {row.minimum_percent:.1f}%–{row.maximum_percent:.1f}%", f"Approximate gap: {row.policy_gap_amount:,.2f} {display}"],
                     explanation="The current allocation is outside the range set by the household allocation policy.",
                     suggested_actions=["Review the target and confirm it still reflects your plan.", "Use available cash or new contributions to address underweights before evaluating sales."],
-                    navigation={"page": "settings", "section": "allocation_policy", "dimension": dimension, "label": row.label}
+                    navigation={"page": "analytics", "section": "allocation_policy", "dimension": dimension, "label": row.label}
                 ))
     cash_positions = sum((p.total_fmv_display or 0) for p in positions if p.security_type.lower() == "cash")
     if total and cash_positions / total >= .20:
@@ -468,16 +525,40 @@ def _growth(history, months):
     if not candidates or not candidates[-1].value: return None
     return (history[-1].value/candidates[-1].value-1)*100
 
-def _forecast(start, a):
+def _month_index(value: date, origin: date) -> int:
+    return (value.year - origin.year) * 12 + value.month - origin.month
+
+
+def _scheduled_monthly_spend(expenses: list[ScheduledExpense], months: int, origin: date, inflation: float, conn, display: str) -> list[float]:
+    result = [0.0] * (months + 1)
+    for expense in expenses:
+        amount = convert_amount(conn, expense.amount, expense.currency, display) or 0
+        if expense.expense_type == "one_time" and expense.expense_date:
+            index = _month_index(date.fromisoformat(expense.expense_date), origin)
+            if 0 <= index <= months: result[index] += amount * (1 + inflation) ** (index / 12)
+        elif expense.start_date and expense.end_date:
+            start, end = _month_index(date.fromisoformat(expense.start_date), origin), _month_index(date.fromisoformat(expense.end_date), origin)
+            duration = end - start + 1
+            for index in range(max(0, start), min(months, end) + 1):
+                result[index] += amount / duration * (1 + inflation) ** (index / 12)
+    return result
+
+
+def _forecast(start, a, expenses: list[ScheduledExpense], conn, display: str):
+    months = (a.end_age - a.current_age) * 12
     mu=(1+a.expected_annual_return)**(1/12)-1; sigma=a.annual_volatility/math.sqrt(12); rng=random.Random(20260804)
-    paths=[]
-    for _ in range(10000):
-        v=start
-        for _ in range(120): v=v*(1+rng.gauss(mu,sigma))+a.monthly_household_contribution
-        paths.append(v)
-    deterministic=[]; v=start
-    for month in range(121):
-        deterministic.append({'month':month,'value':v})
-        v=v*(1+mu)+a.monthly_household_contribution
-    paths.sort()
-    return {'deterministic': deterministic, 'months': 120, 'monte_carlo_terminal': {'p10':paths[999], 'p50':paths[4999], 'p90':paths[8999]}, 'note':'Forecast assumes constant FX rates and is illustrative, not advice.'}
+    scheduled = _scheduled_monthly_spend(expenses, months, date.today(), a.inflation_rate, conn, display)
+    # A dated item in the current calendar month is due in the opening period;
+    # deduct it before recording the opening projection point rather than
+    # silently dropping index zero from the monthly loop below.
+    paths = [max(0, start - scheduled[0])] * 10000
+    series=[]
+    for month in range(months + 1):
+        if month % 12 == 0 or month == months:
+            ranked = sorted(paths)
+            series.append({'month': month, 'age': a.current_age + month / 12, 'p10': ranked[999], 'p50': ranked[4999], 'p80': ranked[7999], 'p95': ranked[9499]})
+        if month < months:
+            spend = a.monthly_expenses * (1 + a.inflation_rate) ** (month / 12) + scheduled[month + 1]
+            paths = [max(0, value * (1 + rng.gauss(mu, sigma)) + a.monthly_household_contribution - spend) for value in paths]
+    terminal = series[-1]
+    return {'series': series, 'months': months, 'current_age': a.current_age, 'end_age': a.end_age, 'monte_carlo_terminal': {key: terminal[key] for key in ('p10', 'p50', 'p80', 'p95')}, 'note':'Forecast includes planned spending, assumes constant FX rates, and is illustrative, not advice.'}

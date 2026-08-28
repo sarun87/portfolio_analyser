@@ -347,6 +347,78 @@ nav button:hover {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.overviewPrivacy {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.hiddenOverviewChart {
+  align-items: center;
+  background: repeating-linear-gradient(-45deg, #f8fafc, #f8fafc 10px, #f1f5f9 10px, #f1f5f9 20px);
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  color: #475569;
+  display: flex;
+  justify-content: center;
+  min-height: 260px;
+  padding: 18px;
+  text-align: center;
+}
+
+.interactiveChart {
+  display: grid;
+  gap: 8px;
+}
+
+.chartZoomControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: space-between;
+}
+
+.chartZoomHint {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.chartZoomButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chartZoomButtons button {
+  font-size: 12px;
+  min-height: 32px;
+  padding: 0 9px;
+}
+
+.allocationPolicyBullets { display: grid; gap: 10px; margin: 14px 0; }
+.allocationPolicyBullet { align-items: center; display: grid; gap: 10px; grid-template-columns: minmax(100px, 180px) minmax(140px, 1fr) 58px; }
+.allocationPolicyBullet > strong { font-size: 13px; text-align: right; }
+.allocationPolicyTrack { background: #e2e8f0; border-radius: 999px; height: 12px; position: relative; }
+.allocationPolicyRange { background: #bbf7d0; border-radius: 999px; height: 100%; position: absolute; }
+.allocationPolicyActual { background: #2563eb; border: 2px solid #fff; border-radius: 50%; height: 16px; position: absolute; top: -2px; transform: translateX(-50%); width: 16px; }
+.allocationPolicyActual.outside { background: #dc2626; }
+.allocationPolicyTarget { background: #0f172a; height: 20px; position: absolute; top: -4px; transform: translateX(-50%); width: 2px; }
+.allocationPolicyBullets .disclosure { margin: 0; }
+
+.correlationHeatmap { display: grid; gap: 3px; margin-top: 16px; overflow: auto; }
+.correlationHeader, .correlationRowHeader { color: #475569; font-size: 11px; overflow: hidden; padding: 5px; text-overflow: ellipsis; white-space: nowrap; }
+.correlationHeader { text-align: center; writing-mode: vertical-rl; transform: rotate(180deg); }
+.correlationRowHeader { align-self: center; }
+.correlationCell { align-items: center; border-radius: 3px; display: flex; font-size: 10px; justify-content: center; min-height: 34px; min-width: 34px; }
+.correlationCell:focus-visible { outline: 3px solid #2563eb; outline-offset: 1px; }
+
+.chartTooltip { background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 6px 20px rgba(15, 23, 42, .15); display: grid; gap: 3px; padding: 9px; }
+.chartTooltip span { font-size: 12px; }
+
 .tableWrap {
   margin-top: 14px;
   overflow: auto;
@@ -1044,6 +1116,18 @@ button.dangerButton {
   color: #f8fafc !important;
 }
 
+[data-theme="dark"] .hiddenOverviewChart {
+  background: repeating-linear-gradient(-45deg, #111827, #111827 10px, #172033 10px, #172033 20px);
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .allocationPolicyTrack { background: #334155; }
+[data-theme="dark"] .allocationPolicyRange { background: #166534; }
+[data-theme="dark"] .allocationPolicyTarget { background: #f8fafc; }
+[data-theme="dark"] .correlationHeader, [data-theme="dark"] .correlationRowHeader { color: #cbd5e1; }
+[data-theme="dark"] .chartTooltip { background: #0f172a; border-color: #334155; color: #f8fafc; }
+
 @media (max-width: 980px) {
   .appShell {
     grid-template-columns: 1fr;
@@ -1166,6 +1250,13 @@ button.dangerButton {
   .onDemandChart { display: grid; gap: 12px; }
   .onDemandChart > button { min-height: 44px; width: 100%; }
   .chartGrid .recharts-responsive-container, .onDemandChart .recharts-responsive-container { height: 320px !important; }
+  .chartZoomControls { align-items: stretch; }
+  .chartZoomButtons { width: 100%; }
+  .chartZoomButtons button { flex: 1 1 0; min-height: 40px; }
+  .overviewPrivacy { align-items: stretch; }
+  .overviewPrivacy button { width: 100%; }
+  .allocationPolicyBullet { grid-template-columns: 1fr; gap: 5px; }
+  .allocationPolicyBullet > strong { text-align: left; }
   .tableWrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   [data-theme="dark"] .topbar { background: #0b1120; }
   [data-theme="dark"] .mobileDataCard, [data-theme="dark"] .mobileCardDetails { border-color: #334155; }

@@ -12,9 +12,9 @@ from backend.app.services.insight_service import (
     list_goals_summary,
     replace_targets,
     save_assumptions,
-    snapshot_comparison,
+    snapshot_comparison, save_scheduled_expense, list_scheduled_expenses,
 )
-from backend.app.services.models import AllocationTarget, FinancialAssumptions, GoalCreate
+from backend.app.services.models import AllocationTarget, FinancialAssumptions, GoalCreate, ScheduledExpenseInput
 from backend.app.services.fx_service import fetch_latest_rates
 
 
@@ -38,10 +38,14 @@ def test_goal_conversion_allocation_warning_and_projection_setup(configured_conn
     assert summary.over_allocated is True
     assert insights(conn).projection_setup_required is True
 
-    save_assumptions(conn, FinancialAssumptions(expected_annual_return=.07, annual_volatility=.1, inflation_rate=.02, monthly_household_contribution=50, monthly_expenses=100))
+    save_assumptions(conn, FinancialAssumptions(expected_annual_return=.07, annual_volatility=.1, inflation_rate=.02, monthly_household_contribution=50, monthly_expenses=100, current_age=40, end_age=85))
+    projected_goal = list_goals_summary(conn).goals[0]
+    assert projected_goal.projected_shortfall_surplus == pytest.approx(projected_goal.projected_value - projected_goal.target_amount_display)
     result = insights(conn)
     assert result.projection_setup_required is False
-    assert result.forecast["monte_carlo_terminal"]["p50"] > 0
+    assert result.forecast["monte_carlo_terminal"]["p50"] >= 0
+    assert result.forecast["end_age"] == 85
+    assert result.forecast["series"][-1]["age"] == 85
 
 
 def test_target_sets_must_total_100_and_goal_date_is_valid(configured_conn):
@@ -52,6 +56,23 @@ def test_target_sets_must_total_100_and_goal_date_is_valid(configured_conn):
     assert targets[0].tolerance_percent == 27
     with pytest.raises(ValueError, match="YYYY-MM"):
         create_goal(configured_conn, GoalCreate(name="Bad", target_amount=1, target_currency="USD", target_month="January", allocated_amount=0, allocated_currency="USD", monthly_contribution=0, contribution_currency="USD"))
+
+
+def test_lifetime_projection_includes_scheduled_expenses_and_validates_ages(configured_conn):
+    conn = configured_conn
+    conn.execute("INSERT INTO static_accounts (category, entity_name, account_type, account_holder, currency, amount) VALUES ('Bank Account', 'Bank', 'Savings', 'A', 'USD', 1000)")
+    with pytest.raises(ValueError, match="End age"):
+        save_assumptions(conn, FinancialAssumptions(current_age=85, end_age=85))
+    save_assumptions(conn, FinancialAssumptions(expected_annual_return=0, annual_volatility=0, inflation_rate=0, monthly_household_contribution=0, monthly_expenses=0, current_age=84, end_age=85))
+    next_month = date.today().replace(day=1)
+    year, month = (next_month.year + 1, 1) if next_month.month == 12 else (next_month.year, next_month.month + 1)
+    expense = save_scheduled_expense(conn, ScheduledExpenseInput(name="Education", expense_type="date_range", amount=120, currency="USD", start_date=f"{year}-{month:02d}-01", end_date=f"{year}-{month:02d}-01"))
+    assert list_scheduled_expenses(conn) == [expense]
+    save_scheduled_expense(conn, ScheduledExpenseInput(name="Due now", expense_type="one_time", amount=100, currency="USD", expense_date=date.today().isoformat()))
+    result = insights(conn).forecast
+    assert result["series"][0]["p50"] == pytest.approx(900)
+    assert result["monte_carlo_terminal"]["p50"] == pytest.approx(780)
+    assert {"p10", "p50", "p80", "p95"} <= result["series"][-1].keys()
 
 
 def test_allocation_policy_ranges_replace_fixed_drift_threshold(configured_conn):
@@ -76,6 +97,8 @@ def test_allocation_policy_ranges_replace_fixed_drift_threshold(configured_conn)
     assert result.allocation_policy.breached_targets == 2
     finding = next(item for item in result.findings if item.id == "policy-asset_category-Large Cap")
     assert finding.category == "allocation_policy"
+    assert finding.navigation["page"] == "analytics"
+    assert finding.navigation["section"] == "allocation_policy"
     assert "40.0%–60.0%" in finding.title
 
 

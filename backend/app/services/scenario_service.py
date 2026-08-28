@@ -185,15 +185,14 @@ def _sale_tax_estimate(conn, payload):
 
 
 def _projection_ready(assumptions) -> bool:
-    return assumptions.expected_annual_return is not None and assumptions.annual_volatility is not None and assumptions.inflation_rate is not None and assumptions.monthly_household_contribution is not None
+    return assumptions.expected_annual_return is not None and assumptions.annual_volatility is not None
 
 
 def _probability(allocated, goal, assumptions):
     if not _projection_ready(assumptions):
         return None
     months = _months_until(goal.target_month)
-    target = goal.target_amount_display * (1 + assumptions.inflation_rate) ** (months / 12)
-    return _goal_probability(allocated, goal.monthly_contribution_display, target, months, assumptions)
+    return _goal_probability(allocated, goal.monthly_contribution_display, goal.target_amount_display, months, assumptions)
 
 
 def _scenario_goals(conn, changes, stress_factor=1.0, stress=False):

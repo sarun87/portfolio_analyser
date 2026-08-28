@@ -135,9 +135,24 @@ CREATE TABLE IF NOT EXISTS financial_assumptions (
   inflation_rate REAL,
   monthly_household_contribution REAL,
   monthly_expenses REAL,
+  current_age INTEGER,
+  end_age INTEGER NOT NULL DEFAULT 85,
   short_term_tax_rate REAL,
   long_term_tax_rate REAL,
   long_term_holding_days INTEGER,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_expenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  expense_type TEXT NOT NULL CHECK (expense_type IN ('one_time', 'date_range')),
+  amount REAL NOT NULL CHECK (amount >= 0),
+  currency TEXT NOT NULL,
+  expense_date TEXT,
+  start_date TEXT,
+  end_date TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -373,7 +388,19 @@ def _composition_provenance(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "fund_constituents", "identifier", "TEXT")
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance))
+def _projection_planning(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "financial_assumptions", "current_age", "INTEGER")
+    _ensure_column(conn, "financial_assumptions", "end_age", "INTEGER NOT NULL DEFAULT 85")
+    conn.execute("""CREATE TABLE IF NOT EXISTS scheduled_expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+        expense_type TEXT NOT NULL CHECK (expense_type IN ('one_time', 'date_range')),
+        amount REAL NOT NULL CHECK (amount >= 0), currency TEXT NOT NULL,
+        expense_date TEXT, start_date TEXT, end_date TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

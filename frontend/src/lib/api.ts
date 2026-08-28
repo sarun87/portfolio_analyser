@@ -21,7 +21,7 @@ import type {
   ScenarioInput, SavedScenario, ScenarioAnalysis, StressTestInput, StressTestResult,
   ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch,
   HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskSettings,
-  FeeAnalysis, FeeSettings, SecurityFee, PortfolioFee, PortfolioFeeInput
+  FeeAnalysis, FeeSettings, SecurityFee, PortfolioFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput
 } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
@@ -152,6 +152,10 @@ export const api = {
   feeAnalysis: () => request<FeeAnalysis>("/api/fee-analysis"),
   assumptions: () => request<FinancialAssumptions>("/api/settings/assumptions"),
   saveAssumptions: (payload: FinancialAssumptions) => request<FinancialAssumptions>("/api/settings/assumptions", { method: "PUT", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  scheduledExpenses: () => request<ScheduledExpense[]>("/api/scheduled-expenses"),
+  createScheduledExpense: (payload: ScheduledExpenseInput) => request<ScheduledExpense>("/api/scheduled-expenses", { method:"POST", headers:jsonHeaders, body:JSON.stringify(payload) }),
+  updateScheduledExpense: (id:number, payload: ScheduledExpenseInput) => request<ScheduledExpense>(`/api/scheduled-expenses/${id}`, { method:"PUT", headers:jsonHeaders, body:JSON.stringify(payload) }),
+  deleteScheduledExpense: (id:number) => request<{deleted:boolean}>(`/api/scheduled-expenses/${id}`, { method:"DELETE" }),
   allocationTargets: (dimension?: string) => request<AllocationTarget[]>(`/api/allocation-targets${dimension ? `?dimension=${dimension}` : ""}`),
   saveAllocationTargets: (dimension: string, targets: AllocationTarget[]) => request<AllocationTarget[]>(`/api/allocation-targets/${dimension}`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify({ dimension, targets }) }),
   allocationCategories: () => request<string[]>("/api/allocation-categories"),

@@ -258,10 +258,14 @@ export type FinancialAssumptions = {
   inflation_rate?: number | null;
   monthly_household_contribution?: number | null;
   monthly_expenses?: number | null;
+  current_age?: number | null;
+  end_age?: number | null;
   short_term_tax_rate?: number | null;
   long_term_tax_rate?: number | null;
   long_term_holding_days?: number | null;
 };
+export type ScheduledExpenseInput = { name:string; expense_type:"one_time"|"date_range"; amount:number; currency:string; expense_date?:string|null; start_date?:string|null; end_date?:string|null };
+export type ScheduledExpense = ScheduledExpenseInput & { id:number };
 
 export type AllocationTarget = { id?: number; dimension: string; label: string; target_percent: number; tolerance_percent: number };
 
@@ -269,11 +273,11 @@ export type Goal = {
   id: number; name: string; description?: string | null; target_amount: number; target_currency: string; target_month: string;
   allocated_amount: number; allocated_currency: string; monthly_contribution: number; contribution_currency: string; priority?: number | null;
   target_amount_display: number; allocated_amount_display: number; monthly_contribution_display: number; display_currency: string;
-  funding_progress?: number | null; projected_value?: number | null; projected_shortfall_surplus?: number | null;
+  projected_value?: number | null; projected_shortfall_surplus?: number | null;
   required_monthly_contribution?: number | null; probability_of_reaching?: number | null;
   created_at: string; updated_at: string;
 };
-export type GoalPayload = Omit<Goal, "id" | "target_amount_display" | "allocated_amount_display" | "monthly_contribution_display" | "display_currency" | "funding_progress" | "projected_value" | "projected_shortfall_surplus" | "required_monthly_contribution" | "probability_of_reaching" | "created_at" | "updated_at">;
+export type GoalPayload = Omit<Goal, "id" | "target_amount_display" | "allocated_amount_display" | "monthly_contribution_display" | "display_currency" | "projected_value" | "projected_shortfall_surplus" | "required_monthly_contribution" | "probability_of_reaching" | "created_at" | "updated_at">;
 export type GoalsSummary = { display_currency: string; investable_financial_assets: number; total_allocated: number; unallocated_remainder: number; over_allocated: boolean; goals: Goal[] };
 export type InsightFinding = {
   id: string; category: string; severity: "critical" | "high" | "medium" | "low"; title: string;
@@ -301,7 +305,7 @@ export type Insights = {
   allocation_drift: Record<string, Array<{ label: string; actual_amount: number; actual_percent: number; target_percent: number; tolerance_percent: number; minimum_percent: number; maximum_percent: number; drift_percent: number; rebalance_amount: number; compliant: boolean; outside_range_percent: number; policy_gap_amount: number }>>;
   allocation_policy: { configured_targets:number; compliant_targets:number; breached_targets:number; unconfigured_dimensions:string[]; largest_breach: { label:string; actual_percent:number; minimum_percent:number; maximum_percent:number; outside_range_percent:number } | null };
   liquidity: AnalyticsPoint[]; cash_runway_months?: number | null; tax_lots: Array<{ position_id: number; security_name: string; acquisition_date?: string | null; holding_days?: number | null; classification: string; gain?: number | null; indicative_tax?: number | null }>;
-  value_history: TimeSeriesPoint[]; rolling_growth: Record<string, number | null>; drawdown: TimeSeriesPoint[]; holding_value_change: AnalyticsPoint[]; forecast?: { monte_carlo_terminal: {p10:number;p50:number;p90:number} } | null;
+  value_history: TimeSeriesPoint[]; rolling_growth: Record<string, number | null>; drawdown: TimeSeriesPoint[]; holding_value_change: AnalyticsPoint[]; forecast?: { current_age?:number; end_age?:number; months?:number; series?:Array<{month:number;age:number;p10:number;p50:number;p80:number;p95:number}>; monte_carlo_terminal: {p10:number;p50:number;p80?:number;p95?:number;p90?:number} } | null;
   findings: InsightFinding[]; snapshot_comparison: SnapshotComparison;
 };
 

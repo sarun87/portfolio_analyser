@@ -74,7 +74,7 @@ from backend.app.services.models import (
     StressTestResult,
     ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch, FundHtmlSyncRequest,
     HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskSettings,
-    FeeAnalysis, FeeSettings, SecurityFee, SecurityFeeInput, PortfolioFee, PortfolioFeeInput,
+    FeeAnalysis, FeeSettings, SecurityFee, SecurityFeeInput, PortfolioFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput,
 )
 from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
 from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
@@ -98,7 +98,8 @@ from backend.app.services.repositories import (
 from backend.app.services.broker_service import delete_broker, preview_broker_configuration, save_broker
 from backend.app.services.insight_service import (
     create_goal, delete_goal, get_assumptions, insights, list_goals_summary, list_targets,
-    replace_targets, save_assumptions, snapshot_comparison, update_goal,
+    replace_targets, save_assumptions, snapshot_comparison, update_goal, list_scheduled_expenses,
+    save_scheduled_expense, delete_scheduled_expense,
 )
 from backend.app.services.scenario_service import (
     analyze_scenario, delete_scenario, list_scenarios, run_stress_test, save_scenario, update_scenario,
@@ -630,7 +631,44 @@ def financial_assumptions() -> FinancialAssumptions:
 @router.put("/settings/assumptions", response_model=FinancialAssumptions)
 def update_financial_assumptions(payload: FinancialAssumptions) -> FinancialAssumptions:
     with get_connection() as conn:
-        return save_assumptions(conn, payload)
+        try:
+            return save_assumptions(conn, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/scheduled-expenses", response_model=list[ScheduledExpense])
+def scheduled_expenses() -> list[ScheduledExpense]:
+    with get_connection() as conn:
+        return list_scheduled_expenses(conn)
+
+
+@router.post("/scheduled-expenses", response_model=ScheduledExpense)
+def create_scheduled_expense(payload: ScheduledExpenseInput) -> ScheduledExpense:
+    with get_connection() as conn:
+        try:
+            return save_scheduled_expense(conn, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/scheduled-expenses/{expense_id}", response_model=ScheduledExpense)
+def update_scheduled_expense(expense_id: int, payload: ScheduledExpenseInput) -> ScheduledExpense:
+    with get_connection() as conn:
+        try:
+            return save_scheduled_expense(conn, payload, expense_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 400, detail=str(exc)) from exc
+
+
+@router.delete("/scheduled-expenses/{expense_id}")
+def remove_scheduled_expense(expense_id: int) -> dict:
+    with get_connection() as conn:
+        try:
+            delete_scheduled_expense(conn, expense_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": True}
 
 
 @router.get("/allocation-targets", response_model=list[AllocationTarget])

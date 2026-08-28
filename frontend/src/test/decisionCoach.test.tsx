@@ -13,8 +13,8 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock("../lib/api", () => ({ api: apiMock }));
 
-import { BrokerSettings, ExposureInsights, ExposurePage, FeesPage, InsightsPage, MobilePositionCard, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
-import type { Insights, Position } from "../lib/types";
+import { AllocationPolicyPage, BrokerSettings, ExposureInsights, ExposurePage, FeesPage, GoalsPage, InsightsPage, MobilePositionCard, ProjectionSettings, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
+import type { GoalsSummary, Insights, Position } from "../lib/types";
 
 const fund = {
   id: 1, security_id: 10, broker_name: "HDFC", account_mask: "****1", security_name: "Index Fund", symbol: "FUND",
@@ -74,14 +74,37 @@ describe("decision coach workspaces", () => {
     cleanup();
     render(<InsightsPage insights={insights}/>);
     expect(screen.queryByText("Configured allocation drift")).not.toBeInTheDocument();
-    expect(screen.getByText("1 policy breach")).toBeInTheDocument();
+    expect(screen.getByText("Portfolio review inbox")).toBeInTheDocument();
     cleanup();
-    render(<ValueMetricsPage insights={insights}/>);
+    render(<AllocationPolicyPage insights={insights}/>);
     expect(screen.getByText("Allocation policy and drift")).toBeInTheDocument();
     expect(screen.getByText("10.00% outside")).toBeInTheDocument();
+    cleanup();
+    render(<ValueMetricsPage insights={insights}/>);
     expect(screen.getByText("Unrealized tax view")).toBeInTheDocument();
     Object.defineProperty(window, "innerWidth", {configurable:true, value:1024});
     vi.unstubAllGlobals();
+  });
+
+  it("shows projection guidance before planning inputs and uses the stated goal target", () => {
+    render(<ProjectionSettings insights={{...insights, projection_setup_required:true, forecast:null} as Insights} assumptions={null} scheduledExpenses={[]} currency="USD" onChanged={vi.fn()}/>);
+    const guidance = screen.getByText(/Set Expenses & Projections assumptions/i);
+    const inputs = screen.getByRole("heading", {name:"Expenses & Projections"});
+    expect(guidance.compareDocumentPosition(inputs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    cleanup();
+
+    const summary = {
+      display_currency:"USD", investable_financial_assets:200, total_allocated:200, unallocated_remainder:0, over_allocated:false,
+      goals:[
+        {id:1,name:"Short goal",description:null,target_amount:100,target_currency:"USD",target_month:"2030-01",allocated_amount:50,allocated_currency:"USD",monthly_contribution:0,contribution_currency:"USD",priority:null,target_amount_display:100,allocated_amount_display:50,monthly_contribution_display:0,display_currency:"USD",projected_value:80,projected_shortfall_surplus:-20,required_monthly_contribution:10,probability_of_reaching:0,created_at:"",updated_at:""},
+        {id:2,name:"Surplus goal",description:null,target_amount:100,target_currency:"USD",target_month:"2030-01",allocated_amount:150,allocated_currency:"USD",monthly_contribution:0,contribution_currency:"USD",priority:null,target_amount_display:100,allocated_amount_display:150,monthly_contribution_display:0,display_currency:"USD",projected_value:140,projected_shortfall_surplus:40,required_monthly_contribution:0,probability_of_reaching:100,created_at:"",updated_at:""}
+      ]
+    } as GoalsSummary;
+    render(<GoalsPage summary={summary} currency={{display_currency:"USD",supported_currencies:["USD"]}} onChanged={vi.fn()}/>);
+    expect(screen.queryByRole("columnheader", {name:"Progress"})).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", {name:"Inflation-adjusted target"})).not.toBeInTheDocument();
+    expect(screen.getByText("-$20.00")).toHaveClass("bad");
+    expect(screen.getByText("$40.00")).toHaveClass("good");
   });
 
   it("expands mobile cards from the card, hides the security name, and isolates refresh", () => {

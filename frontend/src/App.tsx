@@ -37,12 +37,20 @@ import {
   CartesianGrid,
   Cell,
   Legend,
+  Line,
+  LineChart,
   Pie,
   PieChart,
+  ReferenceArea,
+  ReferenceLine,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Sector,
   Tooltip,
   XAxis,
-  YAxis
+  YAxis,
+  ZAxis
 } from "recharts";
 import { api } from "./lib/api";
 import type {
@@ -68,7 +76,7 @@ import type {
   Insights, InsightFinding
   , SavedScenario, ScenarioInput, ScenarioAnalysis, StressTestInput, StressTestResult,
   ExposureAnalysis, FundCompositionInput, FundConstituent, PublicMetadataPreview, FundMetadata, PeerResearch,
-  RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput
+  RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput
 } from "./lib/types";
 
 type View = "overview" | "assets" | "portfolio" | "analytics" | "planning" | "upload" | "settings";
@@ -120,6 +128,44 @@ const positionColumns: Array<{ key: PositionColumn; label: string }> = [
 ];
 const defaultPositionColumns = positionColumns.map((column) => column.key);
 
+function useSessionValue<T extends string>(key: string, fallback: T, allowed: readonly T[]) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = window.sessionStorage.getItem(key);
+      return stored && allowed.includes(stored as T) ? stored as T : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(key, value);
+    } catch {
+      // Browser privacy settings can disable session storage.
+    }
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
+function useSessionBoolean(key: string, fallback = false) {
+  const [value, setValue] = useState(() => {
+    try {
+      const stored = window.sessionStorage.getItem(key);
+      return stored === null ? fallback : stored === "true";
+    } catch {
+      return fallback;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(key, String(value));
+    } catch {
+      // Browser privacy settings can disable session storage.
+    }
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
 function WorkspaceTabs({ tabs, active, onChange }: { tabs: Array<{ id: string; label: string }>; active: string; onChange: (id: string) => void }) {
   return <div className="settingsTabs workspaceTabs" role="tablist">{tabs.map(tab => <button key={tab.id} role="tab" aria-selected={active === tab.id} className={active === tab.id ? "active" : "secondary"} onClick={() => onChange(tab.id)}>{tab.label}</button>)}</div>;
 }
@@ -152,6 +198,281 @@ function number(value?: number | null) {
 function pct(value?: number | null) {
   if (value === null || value === undefined) return "-";
   return `${value.toFixed(2)}%`;
+}
+
+type ChartDatum = Record<string, unknown>;
+type ChartRange = { start: number; end: number };
+
+function clampedChartRange(range: ChartRange, length: number): ChartRange | null {
+  if (length < 2 || range.start < 0 || range.end >= length || range.start >= range.end) return null;
+  return range;
+}
+
+function centeredChartRange(center: number, size: number, length: number): ChartRange {
+  const boundedSize = Math.min(length, Math.max(2, size));
+  let start = Math.round(center - (boundedSize - 1) / 2);
+  start = Math.max(0, Math.min(start, length - boundedSize));
+  return { start, end: start + boundedSize - 1 };
+}
+
+export function visibleYDomain(data: ChartDatum[], valueKeys: string[], includeZero = false): [number, number] | undefined {
+  const values = data.flatMap((row) => valueKeys.map((key) => Number(row[key]))).filter(Number.isFinite);
+  if (!values.length) return undefined;
+  let minimum = Math.min(...values);
+  let maximum = Math.max(...values);
+  if (includeZero) minimum = Math.min(0, minimum);
+  const spread = maximum - minimum;
+  const padding = spread ? spread * 0.08 : Math.max(Math.abs(maximum) * 0.08, 1);
+  minimum = includeZero && minimum === 0 ? 0 : minimum - padding;
+  maximum += padding;
+  return [minimum, maximum];
+}
+
+function useScatterZoom(data: Array<{ x: number; y: number }>, yStartsAtZero = false) {
+  const [level, setLevel] = useState(0);
+  const domain = (key: "x" | "y"): [number, number] => {
+    const extent = Math.max(1, ...data.map((row) => Math.abs(row[key]))) * 1.12 / (1 + level * 0.5);
+    return [-extent, extent];
+  };
+  const yExtent = Math.max(1, ...data.map((row) => row.y)) * 1.12 / (1 + level * 0.5);
+  return { xDomain: domain("x"), yDomain: yStartsAtZero ? [0, yExtent] as [number, number] : domain("y"), canZoomIn: level < 5 && data.length > 1, canZoomOut: level > 0, isZoomed: level > 0, zoomIn: () => setLevel((current) => Math.min(5, current + 1)), zoomOut: () => setLevel((current) => Math.max(0, current - 1)), reset: () => setLevel(0) };
+}
+
+function ScatterZoomControls({ zoom }: { zoom: ReturnType<typeof useScatterZoom> }) {
+  return <div className="chartZoomControls" aria-label="Bubble chart zoom controls"><span className="chartZoomHint">Zooms the profit/loss and investment axes.</span><div className="chartZoomButtons"><button className="secondary" type="button" onClick={zoom.zoomIn} disabled={!zoom.canZoomIn}>Zoom in</button><button className="secondary" type="button" onClick={zoom.zoomOut} disabled={!zoom.canZoomOut}>Zoom out</button><button className="secondary" type="button" onClick={zoom.reset} disabled={!zoom.isZoomed}>Reset zoom</button></div></div>;
+}
+
+function useCartesianZoom(data: ChartDatum[], xKey: string, valueKeys: string[], includeZero = false) {
+  const isPhone = useIsPhone();
+  const [range, setRange] = useState<ChartRange | null>(null);
+  const [dragStart, setDragStart] = useState<number | null>(null);
+  const [dragEnd, setDragEnd] = useState<number | null>(null);
+  const currentRange = range ? clampedChartRange(range, data.length) : null;
+  const visibleData = currentRange ? data.slice(currentRange.start, currentRange.end + 1) : data;
+  const selection = dragStart !== null && dragEnd !== null && dragStart !== dragEnd
+    ? { start: Math.min(dragStart, dragEnd), end: Math.max(dragStart, dragEnd) }
+    : null;
+
+  function indexForEvent(event: { activeLabel?: unknown } | null | undefined) {
+    if (event?.activeLabel === undefined) return null;
+    const index = data.findIndex((row) => String(row[xKey]) === String(event.activeLabel));
+    return index === -1 ? null : index;
+  }
+
+  function startSelection(event: { activeLabel?: unknown }) {
+    if (isPhone) return;
+    const index = indexForEvent(event);
+    if (index === null) return;
+    setDragStart(index);
+    setDragEnd(index);
+  }
+
+  function updateSelection(event: { activeLabel?: unknown }) {
+    if (isPhone || dragStart === null) return;
+    const index = indexForEvent(event);
+    if (index !== null) setDragEnd(index);
+  }
+
+  function finishSelection(event: { activeLabel?: unknown }) {
+    if (isPhone || dragStart === null) return;
+    const end = indexForEvent(event) ?? dragEnd;
+    if (end !== null && end !== dragStart) {
+      setRange({ start: Math.min(dragStart, end), end: Math.max(dragStart, end) });
+    }
+    setDragStart(null);
+    setDragEnd(null);
+  }
+
+  function cancelSelection() {
+    setDragStart(null);
+    setDragEnd(null);
+  }
+
+  function zoomIn() {
+    if (data.length < 3) return;
+    const source = currentRange || { start: 0, end: data.length - 1 };
+    const size = source.end - source.start + 1;
+    if (size <= 2) return;
+    setRange(centeredChartRange((source.start + source.end) / 2, Math.max(2, Math.ceil(size / 2)), data.length));
+  }
+
+  function zoomOut() {
+    if (!currentRange) return;
+    const size = currentRange.end - currentRange.start + 1;
+    const expanded = centeredChartRange((currentRange.start + currentRange.end) / 2, Math.min(data.length, Math.max(size + 1, size * 2)), data.length);
+    setRange(expanded.start === 0 && expanded.end === data.length - 1 ? null : expanded);
+  }
+
+  return {
+    canZoom: data.length > 1,
+    isPhone,
+    isZoomed: Boolean(currentRange),
+    visibleData,
+    yDomain: visibleYDomain(visibleData, valueKeys, includeZero),
+    selection,
+    selectionStartValue: selection ? data[selection.start]?.[xKey] as string | number : undefined,
+    selectionEndValue: selection ? data[selection.end]?.[xKey] as string | number : undefined,
+    startSelection,
+    updateSelection,
+    finishSelection,
+    cancelSelection,
+    zoomIn,
+    zoomOut,
+    reset: () => setRange(null)
+  };
+}
+
+function ChartZoomControls({ zoom }: { zoom: ReturnType<typeof useCartesianZoom> }) {
+  return <div className="chartZoomControls" aria-label="Chart zoom controls">
+    {!zoom.isPhone && <span className="chartZoomHint">Drag across the chart to select a range.</span>}
+    <div className="chartZoomButtons">
+      <button className="secondary" type="button" onClick={zoom.zoomIn} disabled={!zoom.canZoom}>Zoom in</button>
+      <button className="secondary" type="button" onClick={zoom.zoomOut} disabled={!zoom.isZoomed}>Zoom out</button>
+      <button className="secondary" type="button" onClick={zoom.reset} disabled={!zoom.isZoomed}>Reset zoom</button>
+    </div>
+  </div>;
+}
+
+function ZoomableGrowthChart({ data, currency, height }: { data: Array<{ date: string; value: number }>; currency: string; height: number }) {
+  const zoom = useCartesianZoom(data, "date", ["value"]);
+  return <div className="interactiveChart">
+    <ChartZoomControls zoom={zoom} />
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="date" minTickGap={24} />
+        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88} />
+        <Tooltip formatter={(value) => money(Number(value), currency)} />
+        {zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14} />}
+        <Area type="monotone" dataKey="value" stroke="#2563eb" fill="#bfdbfe" baseValue={zoom.yDomain?.[0]} />
+      </AreaChart>
+    </ResponsiveContainer>
+  </div>;
+}
+
+function ZoomableBrokerChart({ data, currency }: { data: Array<{ label: string; value: number }>; currency: string }) {
+  const zoom = useCartesianZoom(data, "label", ["value"], true);
+  return <div className="interactiveChart">
+    <ChartZoomControls zoom={zoom} />
+    <ResponsiveContainer width="100%" height={300}>
+      <BarChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="label" interval={0} angle={zoom.visibleData.length > 5 ? -25 : 0} textAnchor={zoom.visibleData.length > 5 ? "end" : "middle"} height={zoom.visibleData.length > 5 ? 70 : 30} />
+        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88} />
+        <Tooltip formatter={(value) => money(Number(value), currency)} />
+        {zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14} />}
+        <Bar dataKey="value" fill="#16a34a" radius={[4, 4, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  </div>;
+}
+
+function ZoomableProjectionChart({ data, currency }: { data: Array<{ month: number; age: number; p10: number; p50: number; p80: number; p95: number }>; currency: string }) {
+  const zoom = useCartesianZoom(data, "age", ["p10", "p50", "p80", "p95"]);
+  return <div className="interactiveChart">
+    <ChartZoomControls zoom={zoom} />
+    <ResponsiveContainer width="100%" height={360}>
+      <LineChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="age" tickFormatter={(age) => `Age ${age}`} minTickGap={20} />
+        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88} />
+        <Tooltip formatter={(value: number, name: string) => [money(value, currency), name]} labelFormatter={(age) => `Age ${age}`} />
+        <Legend />
+        {zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14} />}
+        <Line type="monotone" dataKey="p50" name="Median (P50)" stroke="#2563eb" dot={false} />
+        <Line type="monotone" dataKey="p80" name="Conservative (P80)" stroke="#f59e0b" dot={false} />
+        <Line type="monotone" dataKey="p95" name="Upside (P95)" stroke="#16a34a" dot={false} />
+        <Line type="monotone" dataKey="p10" name="Downside (P10)" stroke="#dc2626" dot={false} />
+      </LineChart>
+    </ResponsiveContainer>
+  </div>;
+}
+
+function ZoomableDrawdownChart({ data }: { data: Array<{ date: string; value: number }> }) {
+  const zoom = useCartesianZoom(data, "date", ["value"], true);
+  return <div className="interactiveChart">
+    <ChartZoomControls zoom={zoom} />
+    <ResponsiveContainer width="100%" height={300}>
+      <AreaChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="date" minTickGap={24} />
+        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => `${Number(value).toFixed(0)}%`} width={56} />
+        <Tooltip formatter={(value) => `${Number(value).toFixed(2)}%`} />
+        {zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#dc2626" fillOpacity={0.14} />}
+        <Area type="monotone" dataKey="value" name="Drawdown" stroke="#dc2626" fill="#fecaca" baseValue={0} />
+      </AreaChart>
+    </ResponsiveContainer>
+  </div>;
+}
+
+function ZoomableFeeProjectionChart({ data, currency }: { data: FeeAnalysis["projections"]; currency: string }) {
+  const zoom = useCartesianZoom(data, "years", ["ending_value_without_fees", "ending_value_after_fees", "opportunity_cost"]);
+  return <div className="interactiveChart">
+    <ChartZoomControls zoom={zoom} />
+    <ResponsiveContainer width="100%" height={320}>
+      <LineChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="years" tickFormatter={(years) => `${years}y`} />
+        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88} />
+        <Tooltip formatter={(value: number, name: string) => [money(value, currency), name]} labelFormatter={(years) => `${years} years`} />
+        <Legend />
+        {zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14} />}
+        <Line type="monotone" dataKey="ending_value_without_fees" name="Value without fees" stroke="#16a34a" dot />
+        <Line type="monotone" dataKey="ending_value_after_fees" name="Value after fees" stroke="#2563eb" dot />
+        <Line type="monotone" dataKey="opportunity_cost" name="Opportunity cost" stroke="#dc2626" strokeDasharray="4 3" dot />
+      </LineChart>
+    </ResponsiveContainer>
+  </div>;
+}
+
+function ZoomableContributionChart({ data, currency, label = "Contribution" }: { data: Array<{ label: string; value: number }>; currency: string; label?: string }) {
+  const zoom = useCartesianZoom(data, "label", ["value"], true);
+  return <div className="interactiveChart"><ChartZoomControls zoom={zoom}/><ResponsiveContainer width="100%" height={320}><BarChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="label" interval={0} angle={zoom.visibleData.length > 5 ? -25 : 0} textAnchor={zoom.visibleData.length > 5 ? "end" : "middle"} height={zoom.visibleData.length > 5 ? 76 : 30}/><YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88}/><Tooltip formatter={(value) => money(Number(value), currency)}/>{zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14}/>}<Bar dataKey="value" name={label}>{zoom.visibleData.map((row) => <Cell key={String((row as Record<string, unknown>).label)} fill={Number((row as Record<string, unknown>).value) >= 0 ? "#16a34a" : "#dc2626"}/>)}</Bar></BarChart></ResponsiveContainer></div>;
+}
+
+type WaterfallChange = { label: string; value: number };
+
+function waterfallRows(start: number, end: number, changes: WaterfallChange[]) {
+  let running = start;
+  const rows: Array<{ label: string; base: number; increase: number; decrease: number; total: number; change?: number }> = [{ label: "Previous", base: 0, increase: 0, decrease: 0, total: start }];
+  changes.filter((change) => change.value !== 0).slice(0, 12).forEach((change) => {
+    const next = running + change.value;
+    rows.push({ label: change.label, base: Math.min(running, next), increase: Math.max(0, change.value), decrease: Math.max(0, -change.value), total: 0, change: change.value });
+    running = next;
+  });
+  const remainder = end - running;
+  if (Math.abs(remainder) > 0.01) rows.push({ label: "Other changes", base: Math.min(running, running + remainder), increase: Math.max(0, remainder), decrease: Math.max(0, -remainder), total: 0, change: remainder });
+  rows.push({ label: "Current", base: 0, increase: 0, decrease: 0, total: end });
+  return rows;
+}
+
+function ValueWaterfall({ start, end, changes, currency }: { start: number; end: number; changes: WaterfallChange[]; currency: string }) {
+  const data = waterfallRows(start, end, changes);
+  return <ResponsiveContainer width="100%" height={340}><BarChart data={data} margin={{ top: 12, right: 16, bottom: 48, left: 12 }}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="label" interval={0} angle={-28} textAnchor="end" height={70}/><YAxis tickFormatter={(value) => money(Number(value), currency)} width={88}/><Tooltip content={({ active, payload }: any) => { const row = payload?.[0]?.payload; return active && row ? <div className="chartTooltip"><strong>{row.label}</strong><span>{row.change == null ? money(row.total, currency) : `${row.change >= 0 ? "+" : ""}${money(row.change, currency)}`}</span></div> : null; }}/><Bar dataKey="base" stackId="waterfall" fill="transparent" isAnimationActive={false}/><Bar dataKey="increase" stackId="waterfall" fill="#16a34a"/><Bar dataKey="decrease" stackId="waterfall" fill="#dc2626"/><Bar dataKey="total" fill="#2563eb"/></BarChart></ResponsiveContainer>;
+}
+
+function GoalFundingChart({ goals, currency }: { goals: GoalsSummary["goals"]; currency: string }) {
+  const data = goals.map((goal) => ({ label: goal.name, target: goal.target_amount_display, allocated: goal.allocated_amount_display, projected: goal.projected_value ?? 0 }));
+  if (!data.length) return null;
+  return <section className="panel"><h2>Goal funding comparison</h2><p className="disclosure">Compare current allocations and projected values against each target.</p><ResponsiveContainer width="100%" height={Math.max(280, data.length * 58 + 80)}><BarChart data={data} layout="vertical" margin={{ top: 12, right: 16, bottom: 12, left: 18 }}><CartesianGrid strokeDasharray="3 3"/><XAxis type="number" tickFormatter={(value) => money(Number(value), currency)}/><YAxis type="category" dataKey="label" width={110}/><Tooltip formatter={(value: number, name: string) => [money(value, currency), name]}/><Legend/><Bar dataKey="target" name="Target" fill="#94a3b8"/><Bar dataKey="allocated" name="Allocated" fill="#2563eb"/><Bar dataKey="projected" name="Projected" fill="#16a34a"/></BarChart></ResponsiveContainer></section>;
+}
+
+function ZoomableCountryReturnChart({ rows, currency }: { rows: DashboardAnalytics["country_returns"]; currency: string }) {
+  const data = rows.map((row) => ({ label: row.country, cost: row.cost_basis, current: row.current_market_value }));
+  const zoom = useCartesianZoom(data, "label", ["cost", "current"]);
+  return <div className="interactiveChart"><ChartZoomControls zoom={zoom}/><ResponsiveContainer width="100%" height={320}><BarChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="label" interval={0} angle={zoom.visibleData.length > 5 ? -25 : 0} textAnchor={zoom.visibleData.length > 5 ? "end" : "middle"} height={zoom.visibleData.length > 5 ? 76 : 30}/><YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88}/><Tooltip formatter={(value: number, name: string) => [money(value, currency), name]}/><Legend/>{zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14}/>}<Bar dataKey="cost" name="Cost basis" fill="#94a3b8"/><Bar dataKey="current" name="Current value" fill="#2563eb"/></BarChart></ResponsiveContainer></div>;
+}
+
+function ZoomableTaxExposureChart({ lots, currency }: { lots: Insights["tax_lots"]; currency: string }) {
+  const data = lots.filter((lot) => lot.gain != null || lot.indicative_tax != null).map((lot) => ({ label: lot.security_name, gain: lot.gain ?? 0, tax: lot.indicative_tax ?? 0 }));
+  const zoom = useCartesianZoom(data, "label", ["gain", "tax"], true);
+  if (!data.length) return null;
+  return <div className="interactiveChart"><ChartZoomControls zoom={zoom}/><ResponsiveContainer width="100%" height={320}><BarChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="label" interval={0} angle={zoom.visibleData.length > 5 ? -25 : 0} textAnchor={zoom.visibleData.length > 5 ? "end" : "middle"} height={zoom.visibleData.length > 5 ? 76 : 30}/><YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88}/><Tooltip formatter={(value: number, name: string) => [money(value, currency), name]}/><Legend/>{zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14}/>}<Bar dataKey="gain" name="Unrealized gain / loss" fill="#2563eb"/><Bar dataKey="tax" name="Indicative tax" fill="#f59e0b"/></BarChart></ResponsiveContainer></div>;
+}
+
+function LiquidityCompositionChart({ rows, currency }: { rows: Insights["liquidity"]; currency: string }) {
+  if (!rows.length) return null;
+  return <section className="panel"><h2>Liquidity composition</h2><p className="disclosure">Balances are grouped by how readily they can fund spending or be converted to cash.</p><ResponsiveContainer width="100%" height={170}><BarChart data={[Object.fromEntries(rows.map((row) => [row.label, row.value]))]} layout="vertical" margin={{ top: 20, right: 16, bottom: 10, left: 8 }}><XAxis type="number" tickFormatter={(value) => money(Number(value), currency)}/><YAxis type="category" dataKey="label" hide/><Tooltip formatter={(value: number, name: string) => [money(value, currency), name]}/><Legend/>{rows.map((row, index) => <Bar key={row.label} dataKey={row.label} stackId="liquidity" fill={colors[index % colors.length]}/>)}</BarChart></ResponsiveContainer></section>;
 }
 
 type SortDirection = "asc" | "desc";
@@ -198,11 +519,13 @@ export function App() {
   const [allocationTargets, setAllocationTargets] = useState<AllocationTarget[]>([]);
   const [allocationCategoryOptions, setAllocationCategoryOptions] = useState<string[]>(fallbackAllocationCategories);
   const [scenarios, setScenarios] = useState<SavedScenario[]>([]);
-  const [view, setView] = useState<View>("overview");
-  const [assetSection, setAssetSection] = useState<"banking" | "real-estate" | "private-equity">("banking");
-  const [portfolioSection, setPortfolioSection] = useState<"growth" | "allocation" | "profit-loss" | "positions">("positions");
-  const [analyticsSection, setAnalyticsSection] = useState<"insights" | "exposure" | "value-metrics" | "risk" | "scenario-lab">("insights");
-  const [planningSection, setPlanningSection] = useState<"goals">("goals");
+  const [scheduledExpenses, setScheduledExpenses] = useState<ScheduledExpense[]>([]);
+  const [view, setView] = useSessionValue<View>("portfolio-active-view", "overview", ["overview", "assets", "portfolio", "analytics", "planning", "upload", "settings"]);
+  const [overviewValuesHidden, setOverviewValuesHidden] = useSessionBoolean("portfolio-overview-values-hidden");
+  const [assetSection, setAssetSection] = useSessionValue<"banking" | "real-estate" | "private-equity">("portfolio-assets-section", "banking", ["banking", "real-estate", "private-equity"]);
+  const [portfolioSection, setPortfolioSection] = useSessionValue<"growth" | "allocation" | "profit-loss" | "positions">("portfolio-portfolio-section", "positions", ["growth", "allocation", "profit-loss", "positions"]);
+  const [analyticsSection, setAnalyticsSection] = useSessionValue<"insights" | "what-changed" | "allocation-policy" | "exposure" | "value-metrics" | "risk" | "scenario-lab">("portfolio-analytics-section", "insights", ["insights", "what-changed", "allocation-policy", "exposure", "value-metrics", "risk", "scenario-lab"]);
+  const [planningSection, setPlanningSection] = useSessionValue<"goals" | "expenses-projections" | "fees">("portfolio-planning-section", "goals", ["goals", "expenses-projections", "fees"]);
   const [positionFilter, setPositionFilter] = useState("");
   const [positionStructuredFilter, setPositionStructuredFilter] = useState<PositionFilters>({});
   const [busy, setBusy] = useState(false);
@@ -214,7 +537,7 @@ export function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
-  const [settingsInitialPage, setSettingsInitialPage] = useState<"general" | "projections">("general");
+  const [settingsInitialPage, setSettingsInitialPage] = useState<"general">("general");
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -239,7 +562,7 @@ export function App() {
   }
 
   async function loadData() {
-    const [brokerRows, positionRows, plRows, dashboard, currencySetting, rates, accountRows, realEstateRows, privateEquityRows, goalRows, assumptionRows, targetRows, scenarioRows, categoryRows] = await Promise.all([
+    const [brokerRows, positionRows, plRows, dashboard, currencySetting, rates, accountRows, realEstateRows, privateEquityRows, goalRows, assumptionRows, targetRows, scenarioRows, categoryRows, expenseRows] = await Promise.all([
       api.brokers(),
       api.positions(),
       api.profitLoss(),
@@ -247,7 +570,7 @@ export function App() {
       api.currency(),
       api.fxRates(),
       api.staticAccounts(),
-      api.realEstate(), api.privateEquity(), api.goals(), api.assumptions(), api.allocationTargets(), api.scenarios(), api.allocationCategories()
+      api.realEstate(), api.privateEquity(), api.goals(), api.assumptions(), api.allocationTargets(), api.scenarios(), api.allocationCategories(), api.scheduledExpenses()
     ]);
     setBrokers(brokerRows);
     setPositions(positionRows);
@@ -261,6 +584,7 @@ export function App() {
     setGoals(goalRows); setAssumptions(assumptionRows); setAllocationTargets(targetRows);
     setScenarios(scenarioRows);
     setAllocationCategoryOptions(categoryRows);
+    setScheduledExpenses(expenseRows);
   }
 
   useEffect(() => {
@@ -279,7 +603,7 @@ export function App() {
   }, [auth?.unlocked]);
 
   useEffect(() => {
-    if (auth?.unlocked && view === "analytics" && analyticsSection === "insights") {
+    if (auth?.unlocked && view === "analytics" && ["insights", "what-changed", "allocation-policy"].includes(analyticsSection)) {
       api.insights().then(setInsights).catch((error) => setMessage(error.message));
     }
   }, [auth?.unlocked, view, analyticsSection, positions]);
@@ -414,6 +738,8 @@ export function App() {
           <Overview
             analytics={analytics}
             positions={positions}
+            valuesHidden={overviewValuesHidden}
+            onValuesHiddenChange={setOverviewValuesHidden}
             onAllocationClick={(label) => {
               setPositionFilter(label);
               setView("portfolio");
@@ -440,14 +766,18 @@ export function App() {
             }}
           />
         )}
-        {view === "analytics" && <WorkspaceTabs tabs={[{id:"insights",label:"Insights"},{id:"exposure",label:"Exposure"},{id:"value-metrics",label:"Value metrics"},{id:"risk",label:"Risk"},{id:"scenario-lab",label:"Scenario Lab"}]} active={analyticsSection} onChange={id => setAnalyticsSection(id as typeof analyticsSection)} />}
-        {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} onNavigate={navigation => { if (navigation.page === "positions") { setPositionFilter(""); setPositionStructuredFilter(navigation.filters || {}); setView("portfolio"); setPortfolioSection("positions"); } else if (navigation.page === "settings") { setSettingsInitialPage(navigation.section === "allocation_policy" ? "projections" : "general"); setView("settings"); } }} />}
+        {view === "analytics" && <WorkspaceTabs tabs={[{id:"insights",label:"Insights"},{id:"what-changed",label:"What Changed"},{id:"allocation-policy",label:"Allocation Policy"},{id:"exposure",label:"Exposure"},{id:"value-metrics",label:"Value metrics"},{id:"risk",label:"Risk"},{id:"scenario-lab",label:"Scenario Lab"}]} active={analyticsSection} onChange={id => setAnalyticsSection(id as typeof analyticsSection)} />}
+        {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} onNavigate={navigation => { if (navigation.page === "positions") { setPositionFilter(""); setPositionStructuredFilter(navigation.filters || {}); setView("portfolio"); setPortfolioSection("positions"); } else if (navigation.page === "analytics" && navigation.section === "allocation_policy") { setAnalyticsSection("allocation-policy"); } else if (navigation.page === "settings") { setPlanningSection("expenses-projections"); setView("planning"); } }} />}
+        {view === "analytics" && analyticsSection === "what-changed" && insights && <WhatChangedPage insights={insights} />}
+        {view === "analytics" && analyticsSection === "allocation-policy" && insights && <AllocationPolicyPage insights={insights} targets={allocationTargets} categories={allocationCategoryOptions} onChanged={loadData} />}
         {view === "analytics" && analyticsSection === "exposure" && <ExposurePage positions={positions} insights={insights} />}
         {view === "analytics" && analyticsSection === "value-metrics" && insights && <ValueMetricsPage insights={insights} />}
         {view === "analytics" && analyticsSection === "risk" && currency && <RiskPage positions={positions} currency={currency.display_currency} />}
         {view === "analytics" && analyticsSection === "scenario-lab" && goals && currency && <ScenarioLab scenarios={scenarios} positions={positions} goals={goals} currency={currency} onChanged={loadData} />}
-        {view === "planning" && <WorkspaceTabs tabs={[{id:"goals",label:"Goals"}]} active={planningSection} onChange={id => setPlanningSection(id as typeof planningSection)} />}
+        {view === "planning" && <WorkspaceTabs tabs={[{id:"goals",label:"Goals"},{id:"expenses-projections",label:"Expenses & Projections"},{id:"fees",label:"Fees"}]} active={planningSection} onChange={id => setPlanningSection(id as typeof planningSection)} />}
         {view === "planning" && planningSection === "goals" && goals && currency && <GoalsPage summary={goals} currency={currency} onChanged={loadData} />}
+        {view === "planning" && planningSection === "expenses-projections" && currency && insights && <ProjectionSettings insights={insights} assumptions={assumptions} scheduledExpenses={scheduledExpenses} currency={currency.display_currency} onChanged={loadData} />}
+        {view === "planning" && planningSection === "fees" && currency && <FeesPage positions={positions} currency={currency.display_currency} />}
         {view === "assets" && <WorkspaceTabs tabs={[{id:"banking",label:"Banking"},{id:"real-estate",label:"Real Estate"},{id:"private-equity",label:"Private Equity"}]} active={assetSection} onChange={id => setAssetSection(id as typeof assetSection)} />}
         {view === "assets" && assetSection === "banking" && (
           <BankingPage
@@ -555,51 +885,65 @@ function AuthGate({ auth, onAuthenticated }: { auth: AuthStatus; onAuthenticated
   );
 }
 
-function Overview({
+export function Overview({
   analytics,
   positions,
-  onAllocationClick
+  onAllocationClick,
+  valuesHidden: controlledValuesHidden,
+  onValuesHiddenChange
 }: {
   analytics: DashboardAnalytics;
   positions: Position[];
   onAllocationClick: (label: string) => void;
+  valuesHidden?: boolean;
+  onValuesHiddenChange?: (hidden: boolean) => void;
 }) {
+  const [localValuesHidden, setLocalValuesHidden] = useState(false);
+  const valuesHidden = controlledValuesHidden ?? localValuesHidden;
+  const displayedValue = (value: string) => valuesHidden ? "••••" : value;
+  const toggleValuesHidden = () => {
+    const next = !valuesHidden;
+    if (controlledValuesHidden === undefined) setLocalValuesHidden(next);
+    onValuesHiddenChange?.(next);
+  };
   return (
     <section className="stack">
+      <div className="overviewPrivacy">
+        <span>{valuesHidden ? "Overview values are hidden." : "Hide values before sharing your screen."}</span>
+        <button className="secondary" type="button" aria-pressed={valuesHidden} onClick={toggleValuesHidden}>
+          {valuesHidden ? "Show values" : "Hide values"}
+        </button>
+      </div>
       <div className="metricGrid">
-        <Metric label="Total Net Worth" value={money(analytics.total_net_worth, analytics.display_currency)} />
-        <Metric label="Brokerage" value={money(analytics.brokerage_value, analytics.display_currency)} />
-        <Metric label="Static Accounts" value={money(analytics.static_accounts_value, analytics.display_currency)} />
-        <Metric label="Real Estate" value={money(analytics.real_estate_value, analytics.display_currency)} />
-        <Metric label="Cost Basis" value={money(analytics.total_cost_basis, analytics.display_currency)} />
+        <Metric label="Total Net Worth" value={displayedValue(money(analytics.total_net_worth, analytics.display_currency))} />
+        <Metric label="Brokerage" value={displayedValue(money(analytics.brokerage_value, analytics.display_currency))} />
+        <Metric label="Static Accounts" value={displayedValue(money(analytics.static_accounts_value, analytics.display_currency))} />
+        <Metric label="Real Estate" value={displayedValue(money(analytics.real_estate_value, analytics.display_currency))} />
+        <Metric label="Cost Basis" value={displayedValue(money(analytics.total_cost_basis, analytics.display_currency))} />
         <Metric
           label="Unrealized P/L"
-          value={money(analytics.unrealized_gain_loss, analytics.display_currency)}
-          tone={analytics.unrealized_gain_loss >= 0 ? "good" : "bad"}
+          value={displayedValue(money(analytics.unrealized_gain_loss, analytics.display_currency))}
+          tone={valuesHidden ? undefined : analytics.unrealized_gain_loss >= 0 ? "good" : "bad"}
         />
-        <Metric label="Positions" value={positions.length.toString()} />
+        <Metric label="Positions" value={displayedValue(positions.length.toString())} />
       </div>
       <div className="chartGrid">
         <ChartPanel title="Net Worth Allocation">
-          <AllocationPie data={analytics.net_worth_allocation} currency={analytics.display_currency} />
+          {valuesHidden ? <HiddenOverviewChart /> : <AllocationPie data={analytics.net_worth_allocation} currency={analytics.display_currency} />}
         </ChartPanel>
         <ChartPanel title="Portfolio Growth">
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={analytics.portfolio_growth}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis tickFormatter={(value) => `$${Math.round(value / 1000)}k`} />
-              <Tooltip formatter={(value) => money(Number(value), analytics.display_currency)} />
-              <Area type="monotone" dataKey="value" stroke="#2563eb" fill="#bfdbfe" />
-            </AreaChart>
-          </ResponsiveContainer>
+          {valuesHidden ? <HiddenOverviewChart /> : <ZoomableGrowthChart data={analytics.portfolio_growth} currency={analytics.display_currency} height={260} />}
         </ChartPanel>
         <ChartPanel title="Asset Allocation">
-          <AllocationPie data={analytics.asset_allocation} currency={analytics.display_currency} onSliceClick={onAllocationClick} />
+          {valuesHidden ? <HiddenOverviewChart /> : <AllocationPie data={analytics.asset_allocation} currency={analytics.display_currency} onSliceClick={onAllocationClick} />}
         </ChartPanel>
       </div>
     </section>
   );
+}
+
+function HiddenOverviewChart() {
+  return <div className="hiddenOverviewChart" role="status">Chart values are hidden for privacy.</div>;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "good" | "bad" }) {
@@ -1257,6 +1601,35 @@ export function MobilePositionCard({ position, moneyMode = "total", refreshing, 
   </article>;
 }
 
+function ProfitLossBubbleChart({ positions }: { positions: Position[] }) {
+  const data = positions.flatMap((position) => {
+    const gain = position.unrealized_gain_loss;
+    const returnPercent = position.unrealized_gain_loss_pct;
+    const investment = position.total_fmv_display;
+    return gain == null || investment == null ? [] : [{
+      id: position.id,
+      label: position.symbol || position.security_name,
+      securityName: position.security_name,
+      x: gain,
+      y: investment,
+      gain,
+      bubbleSize: Math.abs(gain),
+      investment,
+      percent: returnPercent
+    }];
+  });
+  const zoom = useScatterZoom(data, true);
+  if (!data.length) return null;
+  const largest = Math.max(...data.map((row) => row.bubbleSize), 1);
+  const sized = data.map((row) => ({ ...row, bubbleSize: Math.max(row.bubbleSize, largest * 0.015) }));
+  const tooltip = ({ active, payload }: any) => {
+    const row = payload?.[0]?.payload;
+    return active && row ? <div className="chartTooltip"><strong>{row.label}</strong><span>{row.securityName}</span><span>Profit / loss: {money(row.gain, positions[0]?.display_currency || "USD")}</span><span>Investment value: {money(row.investment, positions[0]?.display_currency || "USD")}</span><span>Return: {pct(row.percent)}</span></div> : null;
+  };
+  const currency = positions[0]?.display_currency || "USD";
+  return <div className="profitLossBubbleChart"><p className="disclosure">X shows total unrealized profit or loss and Y shows total investment value. The vertical line marks zero profit or loss; bubble area reflects the absolute profit or loss.</p><ScatterZoomControls zoom={zoom}/><ResponsiveContainer width="100%" height={410}><ScatterChart margin={{ top: 54, right: 24, bottom: 34, left: 18 }}><CartesianGrid strokeDasharray="3 3"/><XAxis type="number" dataKey="x" name="Profit / loss" domain={zoom.xDomain} tickFormatter={(value) => money(Number(value), currency)} label={{ value: "Profit / loss", position: "insideBottom", offset: -18 }}/><YAxis type="number" dataKey="y" name="Investment value" domain={zoom.yDomain} tickFormatter={(value) => money(Number(value), currency)} width={88} label={{ value: "Investment value", angle: -90, position: "insideLeft" }}/><ZAxis type="number" dataKey="bubbleSize" range={[70, 850]}/><ReferenceLine x={0} stroke="#64748b" strokeWidth={2}/><Tooltip cursor={{ strokeDasharray: "3 3" }} content={tooltip}/><Legend verticalAlign="top" height={32}/><Scatter name="Profit" data={sized.filter((row) => row.gain >= 0)} fill="#16a34a"/><Scatter name="Loss" data={sized.filter((row) => row.gain < 0)} fill="#dc2626"/></ScatterChart></ResponsiveContainer></div>;
+}
+
 function ProfitLossTable({ positions }: { positions: Position[] }) {
   const [sort, setSort] = useState<SortState<Position>>({ key: "unrealized_gain_loss_native", direction: "desc" });
   const sorted = useMemo(
@@ -1272,6 +1645,7 @@ function ProfitLossTable({ positions }: { positions: Position[] }) {
   return (
     <section className="panel">
       <h2>Unrealized Profit/Loss</h2>
+      <ProfitLossBubbleChart positions={positions} />
       <div className="tableWrap desktopDataTable">
         <table>
           <thead>
@@ -1316,16 +1690,8 @@ function GrowthView({ analytics }: { analytics: DashboardAnalytics }) {
   return (
     <section className="stack"><section className="panel tall">
       <h2>Portfolio Growth</h2>
-      <ResponsiveContainer width="100%" height={420}>
-        <AreaChart data={analytics.portfolio_growth}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="date" />
-          <YAxis tickFormatter={(value) => `$${Math.round(value / 1000)}k`} />
-          <Tooltip formatter={(value) => money(Number(value), analytics.display_currency)} />
-          <Area type="monotone" dataKey="value" stroke="#2563eb" fill="#bfdbfe" />
-        </AreaChart>
-      </ResponsiveContainer>
-    </section>{analytics.country_returns.length > 0 && <section className="panel"><h2>Country returns</h2><p className="disclosure">{analytics.country_snapshot_disclosure}</p><div className="tableWrap"><table><thead><tr><th>Country</th><th>Current value</th><th>Cost basis</th><th>Unrealized return</th><th>Earliest snapshot</th><th>Latest snapshot</th><th>Value-change proxy</th></tr></thead><tbody>{analytics.country_returns.map(row=>{const tone=row.unrealized_return>=0?"good":"bad";return <tr key={row.country}><td>{row.country}</td><td>{money(row.current_market_value,analytics.display_currency)}</td><td>{money(row.cost_basis,analytics.display_currency)}</td><td className={`countryReturn ${tone}`}><strong>{money(row.unrealized_return,analytics.display_currency)}</strong><br/><b>{pct(row.unrealized_return_percent)}</b></td><td>{money(row.earliest_snapshot_value,analytics.display_currency)}</td><td>{money(row.latest_snapshot_value,analytics.display_currency)}</td><td>{pct(row.snapshot_value_change_percent)}</td></tr>})}</tbody></table></div></section>}</section>
+      <ZoomableGrowthChart data={analytics.portfolio_growth} currency={analytics.display_currency} height={420} />
+    </section>{analytics.country_returns.length > 0 && <section className="panel"><h2>Country returns</h2><p className="disclosure">{analytics.country_snapshot_disclosure}</p><ZoomableCountryReturnChart rows={analytics.country_returns} currency={analytics.display_currency}/><div className="tableWrap"><table><thead><tr><th>Country</th><th>Current value</th><th>Cost basis</th><th>Unrealized return</th><th>Earliest snapshot</th><th>Latest snapshot</th><th>Value-change proxy</th></tr></thead><tbody>{analytics.country_returns.map(row=>{const tone=row.unrealized_return>=0?"good":"bad";return <tr key={row.country}><td>{row.country}</td><td>{money(row.current_market_value,analytics.display_currency)}</td><td>{money(row.cost_basis,analytics.display_currency)}</td><td className={`countryReturn ${tone}`}><strong>{money(row.unrealized_return,analytics.display_currency)}</strong><br/><b>{pct(row.unrealized_return_percent)}</b></td><td>{money(row.earliest_snapshot_value,analytics.display_currency)}</td><td>{money(row.latest_snapshot_value,analytics.display_currency)}</td><td>{pct(row.snapshot_value_change_percent)}</td></tr>})}</tbody></table></div></section>}</section>
   );
 }
 
@@ -1378,15 +1744,7 @@ function AllocationView({
           {desired.length ? <AllocationPie data={desired} currency={analytics.display_currency} /> : <p className="disclosure">Set asset-category targets in Settings to compare desired allocation.</p>}
         </ChartPanel>
         <ChartPanel title="Broker Allocation">
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={analytics.broker_allocation}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" />
-              <YAxis tickFormatter={(value) => `$${Math.round(value / 1000)}k`} />
-              <Tooltip formatter={(value) => money(Number(value), analytics.display_currency)} />
-              <Bar dataKey="value" fill="#16a34a" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <ZoomableBrokerChart data={analytics.broker_allocation} currency={analytics.display_currency} />
         </ChartPanel>
         <ChartPanel title="Investment Country">
           <AllocationPie data={analytics.country_allocation} currency={analytics.display_currency} onSliceClick={onAllocationClick} />
@@ -1400,6 +1758,24 @@ function AllocationView({
       </div>
     </section>
   );
+}
+
+const smallPieSliceThreshold = 0.05;
+
+function ExplodedPieSlice(props: any) {
+  const percent = Number(props.percent) || 0;
+  const offset = percent > 0 && percent < smallPieSliceThreshold ? 12 : 0;
+  const radians = -Number(props.midAngle || 0) * Math.PI / 180;
+  return <Sector {...props} cx={Number(props.cx) + Math.cos(radians) * offset} cy={Number(props.cy) + Math.sin(radians) * offset} />;
+}
+
+function pieLabel(label: string, value: number, total: number, percent?: number) {
+  const share = percent ?? (total ? value / total : 0);
+  return share >= smallPieSliceThreshold ? `${label} ${(share * 100).toFixed(1)}%` : "";
+}
+
+export function smallPieSliceIndexes(data: Array<{ value: number }>, total: number) {
+  return data.flatMap((row, index) => total && row.value / total < smallPieSliceThreshold ? [index] : []);
 }
 
 function AllocationPie({
@@ -1420,7 +1796,10 @@ function AllocationPie({
           dataKey="value"
           nameKey="label"
           outerRadius={105}
-          label={({ label, value }) => `${label} ${total ? ((Number(value) / total) * 100).toFixed(1) : "0.0"}%`}
+          paddingAngle={2}
+          activeIndex={smallPieSliceIndexes(data, total)}
+          activeShape={ExplodedPieSlice}
+          label={({ label, value, percent }) => pieLabel(String(label), Number(value), total, Number(percent))}
           onClick={(entry) => onSliceClick?.(entry.label)}
         >
           {data.map((_, index) => (
@@ -2055,11 +2434,37 @@ function PrivateEquityPage({assets,currency,onChanged}:{assets:PrivateEquityAsse
 
 export function InsightsPage({ insights, onNavigate = () => {} }: { insights: Insights; onNavigate?: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
   const c = insights.display_currency;
-  return <section className="stack"><ReviewInbox findings={insights.findings} currency={c} onNavigate={onNavigate} /><SnapshotChanges comparison={insights.snapshot_comparison} currency={c} /><AllocationPolicySummary policy={insights.allocation_policy} />
-    {insights.projection_setup_required && <div className="notice">Set Expenses & Projections assumptions in Settings to enable deterministic and Monte Carlo forecasts.</div>}
-    <section className="panel"><h2>Projection guidance</h2><div className="metricGrid"><MetricCard label="Cash runway" value={insights.cash_runway_months == null ? "Set expenses" : `${insights.cash_runway_months.toFixed(1)} months`} /></div></section>
-    {insights.forecast && <section className="panel"><h2>10-year forecast</h2><p>10,000 simulated monthly paths, with constant FX assumptions.</p><div className="metricGrid"><MetricCard label="P10 terminal" value={money(insights.forecast.monte_carlo_terminal.p10,c)} /><MetricCard label="P50 terminal" value={money(insights.forecast.monte_carlo_terminal.p50,c)} /><MetricCard label="P90 terminal" value={money(insights.forecast.monte_carlo_terminal.p90,c)} /></div></section>}
-  </section>;
+  return <section className="stack"><ReviewInbox findings={insights.findings} currency={c} onNavigate={onNavigate} /></section>;
+}
+
+export function WhatChangedPage({ insights }: { insights: Insights }) { return <SnapshotChanges comparison={insights.snapshot_comparison} currency={insights.display_currency} />; }
+
+export function AllocationPolicyPage({ insights, targets, categories, onChanged }: { insights: Insights; targets?: AllocationTarget[]; categories?: string[]; onChanged?: () => Promise<void> }) {
+  const c=insights.display_currency;
+  return <section className="stack"><AllocationPolicySummary policy={insights.allocation_policy} /><section className="panel"><h2>Allocation policy and drift</h2><p>Policy ranges are guardrails, not trade instructions. Rebalance amounts remain indicative.</p>{Object.entries(insights.allocation_drift).map(([dimension, rows]) => <div key={dimension}><h3>{dimension.replace("_", " ")}</h3>{rows.length===0?<p className="disclosure">No policy targets configured.</p>:<><AllocationPolicyBullets rows={rows} /><div className="tableWrap"><table><thead><tr><th>Target</th><th>Actual</th><th>Policy range</th><th>Drift</th><th>Status</th><th>Over / under</th></tr></thead><tbody>{rows.map(r=><tr key={r.label}><td>{r.label}</td><td>{money(r.actual_amount,c)}<br/><small>{pct(r.actual_percent)}</small></td><td>{pct(r.minimum_percent)} – {pct(r.maximum_percent)}</td><td>{pct(r.drift_percent)}</td><td><span className={`pill ${r.compliant ? "" : "warn"}`}>{r.compliant ? "Within range" : `${pct(r.outside_range_percent)} outside`}</span></td><td>{money(r.rebalance_amount,c)}</td></tr>)}</tbody></table></div></>}</div>)}</section>{targets&&categories&&onChanged&&<section className="panel"><AllocationTargetSettings targets={targets} categories={categories} onChanged={onChanged}/></section>}</section>;
+}
+
+function AllocationPolicyBullets({ rows }: { rows: Insights["allocation_drift"][string] }) {
+  const scale = Math.max(100, ...rows.map((row) => Math.max(row.actual_percent, row.maximum_percent)));
+  const position = (value: number) => `${Math.max(0, Math.min(100, value / scale * 100))}%`;
+  return <div className="allocationPolicyBullets" aria-label="Allocation policy comparison">
+    {rows.map((row) => <div className="allocationPolicyBullet" key={row.label}>
+      <span>{row.label}</span>
+      <div className="allocationPolicyTrack" title={`${row.label}: ${pct(row.actual_percent)} actual; target range ${pct(row.minimum_percent)} to ${pct(row.maximum_percent)}`}>
+        <i className="allocationPolicyRange" style={{ left: position(row.minimum_percent), width: position(row.maximum_percent - row.minimum_percent) }} />
+        <b className={`allocationPolicyActual ${row.compliant ? "" : "outside"}`} style={{ left: position(row.actual_percent) }} />
+        <em className="allocationPolicyTarget" style={{ left: position(row.target_percent) }} />
+      </div>
+      <strong>{pct(row.actual_percent)}</strong>
+    </div>)}
+    <p className="disclosure">Band = policy range · line = target · dot = actual allocation</p>
+  </div>;
+}
+
+export function ProjectionGuidancePage({ insights }: { insights: Insights }) {
+  const c=insights.display_currency, forecast=insights.forecast;
+  if (insights.projection_setup_required || !forecast || !forecast.series || forecast.end_age == null) return <section className="stack"><div className="notice">Set Expenses & Projections assumptions in Planning, including your current and end ages, to enable lifetime guidance.</div></section>;
+  return <section className="stack"><section className="panel"><h2>Projection guidance</h2><p>10,000 simulated monthly paths through age {forecast.end_age}. Drag across the chart to inspect a period, or use its zoom controls.</p><div className="metricGrid"><MetricCard label="Cash runway" value={insights.cash_runway_months == null ? "Set expenses" : `${insights.cash_runway_months.toFixed(1)} months`} /><MetricCard label="Median at end age" value={money(forecast.monte_carlo_terminal.p50,c)} /></div><div className="chart"><ZoomableProjectionChart data={forecast.series} currency={c} /></div></section></section>;
 }
 
 export function ExposureInsights({ insights }: { insights: Insights }) {
@@ -2073,10 +2478,10 @@ export function ExposureInsights({ insights }: { insights: Insights }) {
 
 export function ValueMetricsPage({ insights }: { insights: Insights }) {
   const c = insights.display_currency;
-  return <section className="stack"><InsightTable title="Liquidity tiers" rows={insights.liquidity} currency={c} />
-    <section className="panel"><h2>Allocation policy and drift</h2><p>Policy ranges are guardrails, not trade instructions. Rebalance amounts remain indicative.</p>{Object.entries(insights.allocation_drift).map(([dimension, rows]) => <div key={dimension}><h3>{dimension.replace("_", " ")}</h3>{rows.length === 0 ? <p className="disclosure">No policy targets configured.</p> : <div className="tableWrap"><table><thead><tr><th>Target</th><th>Actual</th><th>Policy range</th><th>Drift</th><th>Status</th><th>Over / under</th></tr></thead><tbody>{rows.map(r => <tr key={r.label}><td>{r.label}</td><td>{money(r.actual_amount,c)}<br/><small>{pct(r.actual_percent)}</small></td><td>{pct(r.minimum_percent)} – {pct(r.maximum_percent)}<br/><small>Target {pct(r.target_percent)} ± {pct(r.tolerance_percent)}</small></td><td>{pct(r.drift_percent)}</td><td><span className={`pill ${r.compliant ? "" : "warn"}`}>{r.compliant ? "Within range" : `${pct(r.outside_range_percent)} outside`}</span></td><td>{money(r.rebalance_amount,c)}</td></tr>)}</tbody></table></div>}</div>)}</section>
-    <section className="panel"><h2>Unrealized tax view</h2><p>Indicative unrealized-gain estimates only; this excludes realized gains and is not tax advice.</p><div className="tableWrap"><table><thead><tr><th>Security</th><th>Holding period</th><th>Gain</th><th>Indicative tax</th></tr></thead><tbody>{insights.tax_lots.map(l => <tr key={l.position_id}><td>{l.security_name}</td><td>{l.classification}{l.holding_days != null ? ` (${l.holding_days}d)` : ""}</td><td>{l.gain == null ? "-" : money(l.gain,c)}</td><td>{l.indicative_tax == null ? "-" : money(l.indicative_tax,c)}</td></tr>)}</tbody></table></div></section>
-    <section className="panel"><h2>Value-change proxy</h2><p>Snapshot value changes are cash-flow-sensitive proxies, not investment returns.</p><div className="metricGrid"><MetricCard label="1-month growth" value={pct(insights.rolling_growth["1"])} /><MetricCard label="3-month growth" value={pct(insights.rolling_growth["3"])} /><MetricCard label="12-month growth" value={pct(insights.rolling_growth["12"])} /></div></section><InsightTable title="Holding contribution to value change" rows={insights.holding_value_change} currency={c} />
+  return <section className="stack"><LiquidityCompositionChart rows={insights.liquidity} currency={c}/><InsightTable title="Liquidity tiers" rows={insights.liquidity} currency={c} />
+    <section className="panel"><h2>Unrealized tax view</h2><p>Indicative unrealized-gain estimates only; this excludes realized gains and is not tax advice.</p><ZoomableTaxExposureChart lots={insights.tax_lots} currency={c}/><div className="tableWrap"><table><thead><tr><th>Security</th><th>Holding period</th><th>Gain</th><th>Indicative tax</th></tr></thead><tbody>{insights.tax_lots.map(l => <tr key={l.position_id}><td>{l.security_name}</td><td>{l.classification}{l.holding_days != null ? ` (${l.holding_days}d)` : ""}</td><td>{l.gain == null ? "-" : money(l.gain,c)}</td><td>{l.indicative_tax == null ? "-" : money(l.indicative_tax,c)}</td></tr>)}</tbody></table></div></section>
+    {insights.drawdown.length > 1 && <section className="panel"><h2>Portfolio drawdown</h2><p className="disclosure">Percentage decline from the highest recorded portfolio value. Drag to inspect a period.</p><ZoomableDrawdownChart data={insights.drawdown} /></section>}
+    <section className="panel"><h2>Value-change proxy</h2><p>Snapshot value changes are cash-flow-sensitive proxies, not investment returns.</p><div className="metricGrid"><MetricCard label="1-month growth" value={pct(insights.rolling_growth["1"])} /><MetricCard label="3-month growth" value={pct(insights.rolling_growth["3"])} /><MetricCard label="12-month growth" value={pct(insights.rolling_growth["12"])} /></div></section>{insights.holding_value_change.length > 0 && <section className="panel"><h2>Holding contribution to value change</h2><ZoomableContributionChart data={insights.holding_value_change} currency={c}/></section>}<InsightTable title="Holding contribution to value change" rows={insights.holding_value_change} currency={c} />
   </section>;
 }
 
@@ -2095,7 +2500,7 @@ function ReviewInbox({ findings, currency, onNavigate }: { findings: Insights["f
 }
 
 function AllocationPolicySummary({ policy }: { policy: Insights["allocation_policy"] }) {
-  if (policy.configured_targets === 0) return <section className="panel"><p className="eyebrow">Allocation policy</p><h2>Policy not configured</h2><p>Set asset-category, country, or currency targets and tolerances in Settings to evaluate portfolio guardrails.</p></section>;
+  if (policy.configured_targets === 0) return <section className="panel"><p className="eyebrow">Allocation policy</p><h2>Policy not configured</h2><p>Set asset-category, country, or currency targets and tolerances in this Allocation Policy section to evaluate portfolio guardrails.</p></section>;
   const largest = policy.largest_breach;
   return <section className="panel"><div className="panelHeader"><div><p className="eyebrow">Allocation policy</p><h2>{policy.breached_targets ? `${policy.breached_targets} policy breach${policy.breached_targets === 1 ? "" : "es"}` : "Within configured policy ranges"}</h2></div><span className={`pill ${policy.breached_targets ? "warn" : ""}`}>{policy.compliant_targets}/{policy.configured_targets} within range</span></div>{largest && <p><strong>Largest variance:</strong> {largest.label} is {pct(largest.outside_range_percent)} outside its {pct(largest.minimum_percent)}–{pct(largest.maximum_percent)} range.</p>}{policy.unconfigured_dimensions.length > 0 && <p className="disclosure">Not configured: {policy.unconfigured_dimensions.map(item => item.replace("_", " ")).join(", ")}.</p>}</section>;
 }
@@ -2106,6 +2511,7 @@ function SnapshotChanges({ comparison, currency }: { comparison: Insights["snaps
   return <section className="panel snapshotChanges">
     <div className="panelHeader"><div><p className="eyebrow">What changed?</p><h2>{comparison.previous_date} to {comparison.latest_date}</h2></div><span className="pill warn">{comparison.coverage_changes.length ? "Inferences + data coverage" : "Inferred activity"}</span></div>
     <div className="metricGrid snapshotMetrics"><MetricCard label={comparison.coverage_changes.length ? "Recorded value change" : "Portfolio value change"} value={money(comparison.total_value_change, currency)} /><MetricCard label={comparison.coverage_changes.length ? "Relative change incl. coverage" : "Relative change"} value={pct(comparison.total_value_change_percent)} /><MetricCard label={comparison.coverage_changes.length ? "Recorded cash change" : "Cash movement"} value={money(comparison.cash_change, currency)} /><MetricCard label="Holdings flagged" value={String(changes.length)} /></div>
+    {changes.length > 0 && <section className="snapshotWaterfall"><h3>Value-change waterfall</h3><ValueWaterfall start={comparison.previous_value} end={comparison.latest_value} changes={changes.map((change) => ({ label: change.symbol || change.security_name, value: change.value_change }))} currency={currency}/></section>}
     {comparison.coverage_changes.length > 0 && <div className="notice coverageNotice">Some changes below come from accounts appearing for the first time in stored data. They are not treated as inferred trades.</div>}
     {changes.length > 0 && <div className="tableWrap"><table><thead><tr><th>Holding</th><th>Change</th><th className="num">Units</th><th className="num">Value change</th><th>Interpretation</th></tr></thead><tbody>{changes.map(change => <tr key={`${change.change_type}-${change.security_id}`}><td><strong>{change.symbol || change.security_name}</strong><span>{change.security_name}</span></td><td>{change.change_type.replace(/_/g, " ")}</td><td className="num">{number(change.previous_units)} → {number(change.latest_units)}</td><td className={change.change_type === "coverage_added" ? "num" : change.value_change >= 0 ? "num good" : "num bad"}>{money(change.value_change, currency)}{change.value_change_percent != null && <span>{pct(change.value_change_percent)}</span>}</td><td>{change.activity_label}</td></tr>)}</tbody></table></div>}
     {comparison.allocation_shifts.length > 0 && <div className="allocationShift"><h3>Largest allocation shifts</h3>{comparison.allocation_shifts.slice(0, 6).map(shift => <div key={shift.label}><strong>{shift.label}</strong><span>{pct(shift.previous_percent)} → {pct(shift.latest_percent)}</span><b className={shift.change_percent >= 0 ? "good" : "bad"}>{shift.change_percent >= 0 ? "+" : ""}{pct(shift.change_percent)}</b></div>)}</div>}
@@ -2139,11 +2545,31 @@ function concentrationChartRows(rows: Array<{ label: string; value: number }>, l
 
 function ConcentrationPie({ title, rows, limit, total, currency }: { title: string; rows: Array<{ label: string; value: number }>; limit: number; total: number; currency: string }) {
   const data = concentrationChartRows(rows, limit, total);
-  return <section className="panel concentrationChart"><h2>{title}</h2><OnDemandChart><ResponsiveContainer width="100%" height={300}><PieChart><Pie data={data} dataKey="value" nameKey="label" outerRadius={100} label={({ name, value }) => `${name} ${total ? pct(Number(value) / total * 100) : "0.00%"}`}>{data.map((row, index) => <Cell key={row.label} fill={colors[index % colors.length]} />)}</Pie><Tooltip formatter={(value) => money(Number(value), currency)} /><Legend /></PieChart></ResponsiveContainer></OnDemandChart></section>;
+  return <section className="panel concentrationChart"><h2>{title}</h2><OnDemandChart><ResponsiveContainer width="100%" height={300}><PieChart><Pie data={data} dataKey="value" nameKey="label" outerRadius={100} paddingAngle={2} activeIndex={smallPieSliceIndexes(data, total)} activeShape={ExplodedPieSlice} label={({ name, value, percent }) => pieLabel(String(name), Number(value), total, Number(percent))}>{data.map((row, index) => <Cell key={row.label} fill={colors[index % colors.length]} />)}</Pie><Tooltip formatter={(value, name) => [`${money(Number(value), currency)} (${total ? ((Number(value) / total) * 100).toFixed(1) : "0.0"}%)`, name]} /><Legend /></PieChart></ResponsiveContainer></OnDemandChart></section>;
 }
 
 function ConcentrationTable({ title, rows, currency, total }: { title: string; rows: Array<{ label: string; value: number }>; currency: string; total: number }) {
   return <section className="panel"><h2>{title}</h2><div className="tableWrap"><table><thead><tr><th>Security</th><th className="num">Amount</th><th className="num">Portfolio</th></tr></thead><tbody>{rows.map((row) => <tr key={row.label}><td>{row.label}</td><td className="num">{money(row.value, currency)}</td><td className="num">{pct(total ? row.value / total * 100 : 0)}</td></tr>)}</tbody></table></div></section>;
+}
+
+function RiskScatterPlot({ holdings }: { holdings: RiskAnalysis["holdings"] }) {
+  const data = holdings.filter((row) => row.annualized_volatility_percent != null && row.risk_contribution_percent != null);
+  if (!data.length) return null;
+  return <section className="panel"><h2>Risk versus portfolio weight</h2><p className="disclosure">Bubble size represents portfolio weight. Hover a holding for exact risk metrics.</p><ResponsiveContainer width="100%" height={360}><ScatterChart margin={{ top: 16, right: 20, bottom: 24, left: 16 }}><CartesianGrid strokeDasharray="3 3"/><XAxis type="number" dataKey="annualized_volatility_percent" name="Volatility" unit="%" tickFormatter={(value) => `${value}%`} label={{ value: "Annualized volatility", position: "insideBottom", offset: -12 }}/><YAxis type="number" dataKey="risk_contribution_percent" name="Risk contribution" unit="%" tickFormatter={(value) => `${value}%`} label={{ value: "Risk contribution", angle: -90, position: "insideLeft" }}/><ZAxis type="number" dataKey="portfolio_weight_percent" range={[70, 620]} name="Portfolio weight"/><Tooltip cursor={{ strokeDasharray: "3 3" }} content={({ active, payload }: any) => { const row = payload?.[0]?.payload; return active && row ? <div className="chartTooltip"><strong>{row.name}</strong><span>Weight: {pct(row.portfolio_weight_percent)}</span><span>Volatility: {pct(row.annualized_volatility_percent)}</span><span>Risk contribution: {pct(row.risk_contribution_percent)}</span><span>Beta: {row.beta?.toFixed(2) || "-"}</span></div> : null; }} /><Scatter data={data} fill="#2563eb" /></ScatterChart></ResponsiveContainer></section>;
+}
+
+function correlationColor(value: number | null) {
+  if (value === null) return "#e2e8f0";
+  const intensity = 0.16 + Math.abs(value) * 0.68;
+  return value >= 0 ? `rgba(22, 163, 74, ${intensity})` : `rgba(220, 38, 38, ${intensity})`;
+}
+
+function CorrelationHeatmap({ holdings, correlations }: { holdings: RiskAnalysis["holdings"]; correlations: RiskAnalysis["correlations"] }) {
+  const selected = holdings.filter((row) => row.annualized_volatility_percent != null).sort((a, b) => (b.risk_contribution_percent ?? b.portfolio_weight_percent) - (a.risk_contribution_percent ?? a.portfolio_weight_percent)).slice(0, 10);
+  if (selected.length < 2) return null;
+  const values = new Map(correlations.map((row) => [`${Math.min(row.left_security_id, row.right_security_id)}:${Math.max(row.left_security_id, row.right_security_id)}`, row.correlation]));
+  const correlationFor = (left: number, right: number) => left === right ? 1 : values.get(`${Math.min(left, right)}:${Math.max(left, right)}`) ?? null;
+  return <section className="panel"><h2>Correlation heatmap</h2><p className="disclosure">The ten holdings with the largest risk contribution are shown. Green is positively correlated; red is negatively correlated.</p><div className="correlationHeatmap" role="grid" aria-label="Holding correlation heatmap" style={{ gridTemplateColumns: `minmax(96px, 1.4fr) repeat(${selected.length}, minmax(34px, 1fr))` }}><span role="columnheader"/>{selected.map((row) => <span role="columnheader" className="correlationHeader" title={row.name} key={row.security_id}>{row.symbol || row.name}</span>)}{selected.flatMap((left) => [<span role="rowheader" className="correlationRowHeader" key={`${left.security_id}-label`} title={left.name}>{left.symbol || left.name}</span>, ...selected.map((right) => { const value = correlationFor(left.security_id, right.security_id); return <span role="gridcell" tabIndex={0} key={`${left.security_id}-${right.security_id}`} className="correlationCell" style={{ backgroundColor: correlationColor(value) }} title={`${left.name} / ${right.name}: ${value == null ? "No overlapping history" : value.toFixed(3)}`}>{value == null ? "–" : value.toFixed(2)}</span>; })])}</div></section>;
 }
 
 export function ScenarioLab({ scenarios, positions, goals, currency, onChanged }: { scenarios: SavedScenario[]; positions: Position[]; goals: GoalsSummary; currency: CurrencySetting; onChanged: () => Promise<void> }) {
@@ -2193,16 +2619,16 @@ function ShockEditor({title,rows,labels={},values,onChange}:{title:string;rows:s
 
 function ScenarioComparison({result}:{result:ScenarioAnalysis}){const c=result.display_currency;return <section className="stack"><div className="comparisonGrid"><MetricCard label="Current value" value={money(result.current.portfolio_value,c)}/><MetricCard label="Proposed value" value={money(result.proposed.portfolio_value,c)}/><MetricCard label="Current cash runway" value={result.current.cash_runway_months==null?"Set expenses":`${result.current.cash_runway_months.toFixed(1)} months`}/><MetricCard label="Proposed cash runway" value={result.proposed.cash_runway_months==null?"Set expenses":`${result.proposed.cash_runway_months.toFixed(1)} months`}/><MetricCard label={`Largest: ${result.current.largest_holding||"-"}`} value={pct(result.current.largest_holding_percent)}/><MetricCard label={`Largest: ${result.proposed.largest_holding||"-"}`} value={pct(result.proposed.largest_holding_percent)}/><MetricCard label="Allocation drift: current" value={pct(result.current.total_absolute_drift_percent)}/><MetricCard label="Allocation drift: proposed" value={pct(result.proposed.total_absolute_drift_percent)}/></div><section className="panel"><h2>Tax and goals</h2><p>Estimated realized gain: {money(result.estimated_realized_gain,c)} · Estimated tax: {result.estimated_tax==null?"Set tax assumptions":money(result.estimated_tax,c)}</p>{result.goals.length>0&&<div className="tableWrap"><table><thead><tr><th>Goal</th><th>Current allocation</th><th>Proposed allocation</th><th>Current probability</th><th>Proposed probability</th></tr></thead><tbody>{result.goals.map(g=><tr key={g.goal_id}><td>{g.name}</td><td>{money(g.current_allocated,c)}</td><td>{money(g.proposed_allocated,c)}</td><td>{pct(g.current_probability)}</td><td>{pct(g.proposed_probability)}</td></tr>)}</tbody></table></div>}<ul className="assumptionList">{result.warnings.map(w=><li key={w}>{w}</li>)}</ul></section></section>}
 
-function StressResults({result}:{result:StressTestResult}){const c=result.display_currency;return <section className="stack"><div className="comparisonGrid"><MetricCard label="Current value" value={money(result.current_value,c)}/><MetricCard label="Stressed value" value={money(result.stressed_value,c)}/><MetricCard label="Projected change" value={money(result.projected_loss,c)}/><MetricCard label="Projected change %" value={pct(result.projected_loss_percent)}/><MetricCard label="Cash runway" value={result.cash_runway_months==null?"Set expenses":`${result.cash_runway_months.toFixed(1)} months`}/></div><section className="panel"><h2>Largest contributors</h2><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Currency</th><th>Current value</th><th>Shock</th><th>Projected change</th></tr></thead><tbody>{result.contributors.slice(0,10).map(row=><tr key={`${row.security_id}|${row.currency}`}><td>{row.security_name}</td><td>{row.currency}</td><td>{money(row.current_value,c)}</td><td>{pct(row.shock_percent)}</td><td className={row.projected_change<0?"bad":"good"}>{money(row.projected_change,c)}</td></tr>)}</tbody></table></div></section>{result.goals.length>0&&<section className="panel"><h2>Affected goals</h2><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Current allocation</th><th>Stressed allocation</th><th>Current probability</th><th>Stressed probability</th></tr></thead><tbody>{result.goals.map(g=><tr key={g.goal_id}><td>{g.name}</td><td>{money(g.current_allocated,c)}</td><td>{money(g.stressed_allocated,c)}</td><td>{pct(g.current_probability)}</td><td>{pct(g.stressed_probability)}</td></tr>)}</tbody></table></div></section>}<section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{result.assumptions.map(a=><li key={a}>{a}</li>)}</ul></section></section>}
+function StressResults({result}:{result:StressTestResult}){const c=result.display_currency;return <section className="stack"><div className="comparisonGrid"><MetricCard label="Current value" value={money(result.current_value,c)}/><MetricCard label="Stressed value" value={money(result.stressed_value,c)}/><MetricCard label="Projected change" value={money(result.projected_loss,c)}/><MetricCard label="Projected change %" value={pct(result.projected_loss_percent)}/><MetricCard label="Cash runway" value={result.cash_runway_months==null?"Set expenses":`${result.cash_runway_months.toFixed(1)} months`}/></div>{result.contributors.length > 0 && <section className="panel"><h2>Stress-test waterfall</h2><ValueWaterfall start={result.current_value} end={result.stressed_value} changes={result.contributors.map((row) => ({ label: row.security_name, value: row.projected_change }))} currency={c}/></section>}<section className="panel"><h2>Largest contributors</h2><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Currency</th><th>Current value</th><th>Shock</th><th>Projected change</th></tr></thead><tbody>{result.contributors.slice(0,10).map(row=><tr key={`${row.security_id}|${row.currency}`}><td>{row.security_name}</td><td>{row.currency}</td><td>{money(row.current_value,c)}</td><td>{pct(row.shock_percent)}</td><td className={row.projected_change<0?"bad":"good"}>{money(row.projected_change,c)}</td></tr>)}</tbody></table></div></section>{result.goals.length>0&&<section className="panel"><h2>Affected goals</h2><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Current allocation</th><th>Stressed allocation</th><th>Current probability</th><th>Stressed probability</th></tr></thead><tbody>{result.goals.map(g=><tr key={g.goal_id}><td>{g.name}</td><td>{money(g.current_allocated,c)}</td><td>{money(g.stressed_allocated,c)}</td><td>{pct(g.current_probability)}</td><td>{pct(g.stressed_probability)}</td></tr>)}</tbody></table></div></section>}<section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{result.assumptions.map(a=><li key={a}>{a}</li>)}</ul></section></section>}
 
-function GoalsPage({ summary, currency, onChanged }: { summary: GoalsSummary; currency: CurrencySetting; onChanged: () => Promise<void> }) {
+export function GoalsPage({ summary, currency, onChanged }: { summary: GoalsSummary; currency: CurrencySetting; onChanged: () => Promise<void> }) {
   const blank = (): GoalPayload => ({name:"",description:"",target_amount:0,target_currency:currency.display_currency,target_month:"",allocated_amount:0,allocated_currency:currency.display_currency,monthly_contribution:0,contribution_currency:currency.display_currency,priority:null});
   const [form, setForm] = useState<GoalPayload | null>(null); const [editing, setEditing] = useState<number | null>(null); const [error,setError]=useState<string|null>(null);
   const edit = (goal?: GoalsSummary["goals"][number]) => { setEditing(goal?.id ?? null); setForm(goal ? {name:goal.name,description:goal.description,target_amount:goal.target_amount,target_currency:goal.target_currency,target_month:goal.target_month,allocated_amount:goal.allocated_amount,allocated_currency:goal.allocated_currency,monthly_contribution:goal.monthly_contribution,contribution_currency:goal.contribution_currency,priority:goal.priority} : blank()); };
   async function save() { if (!form) return; try { setError(null); editing ? await api.updateGoal(editing,form) : await api.createGoal(form); setForm(null); await onChanged(); } catch(e) {setError(e instanceof Error?e.message:"Could not save goal.");} }
   return <section className="stack"><div className="metricGrid"><MetricCard label="Investable financial assets" value={money(summary.investable_financial_assets,summary.display_currency)} /><MetricCard label="Allocated to goals" value={money(summary.total_allocated,summary.display_currency)} /><MetricCard label="Unallocated remainder" value={money(summary.unallocated_remainder,summary.display_currency)} /></div>{summary.over_allocated && <div className="error">Goal allocations exceed investable financial assets. This is a warning only; allocations are not blocked.</div>}<div className="panelHeader"><h2>Goals</h2><button className="primaryButton" onClick={() => edit()}><Target size={16}/> Add goal</button></div>
-  {form && <section className="panel"><h2>{editing ? "Edit goal" : "New goal"}</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Target month<input type="month" value={form.target_month} onChange={e=>setForm({...form,target_month:e.target.value})}/></label><label>Target amount<input type="number" value={form.target_amount} onChange={e=>setForm({...form,target_amount:Number(e.target.value)})}/></label><label>Target currency<CurrencyInput value={form.target_currency} onChange={v=>setForm({...form,target_currency:v})} currencies={currency.supported_currencies}/></label><label>Manual allocation<input type="number" value={form.allocated_amount} onChange={e=>setForm({...form,allocated_amount:Number(e.target.value)})}/></label><label>Allocation currency<CurrencyInput value={form.allocated_currency} onChange={v=>setForm({...form,allocated_currency:v})} currencies={currency.supported_currencies}/></label><label>Monthly contribution<input type="number" value={form.monthly_contribution} onChange={e=>setForm({...form,monthly_contribution:Number(e.target.value)})}/></label><label>Contribution currency<CurrencyInput value={form.contribution_currency} onChange={v=>setForm({...form,contribution_currency:v})} currencies={currency.supported_currencies}/></label><label>Priority<input type="number" value={form.priority ?? ""} onChange={e=>setForm({...form,priority:e.target.value ? Number(e.target.value) : null})}/></label><label>Description<input value={form.description ?? ""} onChange={e=>setForm({...form,description:e.target.value})}/></label></div><div className="buttonRow left"><button className="primaryButton" onClick={save}>Save goal</button><button className="secondary" onClick={()=>setForm(null)}>Cancel</button></div>{error&&<div className="error">{error}</div>}</section>}
-  <section className="panel"><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Progress</th><th>Target</th><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{summary.goals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{pct(g.funding_progress)}</td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
+  {form && <section className="panel"><h2>{editing ? "Edit goal" : "New goal"}</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Target month<input type="month" value={form.target_month} onChange={e=>setForm({...form,target_month:e.target.value})}/></label><label>Target amount at target date<input type="number" value={form.target_amount} onChange={e=>setForm({...form,target_amount:Number(e.target.value)})}/><small>Enter the amount needed at the target date; it is already inflation-adjusted.</small></label><label>Target currency<CurrencyInput value={form.target_currency} onChange={v=>setForm({...form,target_currency:v})} currencies={currency.supported_currencies}/></label><label>Manual allocation<input type="number" value={form.allocated_amount} onChange={e=>setForm({...form,allocated_amount:Number(e.target.value)})}/></label><label>Allocation currency<CurrencyInput value={form.allocated_currency} onChange={v=>setForm({...form,allocated_currency:v})} currencies={currency.supported_currencies}/></label><label>Monthly contribution<input type="number" value={form.monthly_contribution} onChange={e=>setForm({...form,monthly_contribution:Number(e.target.value)})}/></label><label>Contribution currency<CurrencyInput value={form.contribution_currency} onChange={v=>setForm({...form,contribution_currency:v})} currencies={currency.supported_currencies}/></label><label>Priority<input type="number" value={form.priority ?? ""} onChange={e=>setForm({...form,priority:e.target.value ? Number(e.target.value) : null})}/></label><label>Description<input value={form.description ?? ""} onChange={e=>setForm({...form,description:e.target.value})}/></label></div><div className="buttonRow left"><button className="primaryButton" onClick={save}>Save goal</button><button className="secondary" onClick={()=>setForm(null)}>Cancel</button></div>{error&&<div className="error">{error}</div>}</section>}
+  <GoalFundingChart goals={summary.goals} currency={summary.display_currency}/><section className="panel"><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Target</th><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{summary.goals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td className={g.projected_shortfall_surplus == null || g.projected_shortfall_surplus === 0 ? undefined : g.projected_shortfall_surplus > 0 ? "good" : "bad"}>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 function CurrencyInput({value,onChange,currencies}:{value:string;onChange:(v:string)=>void;currencies:string[]}) { return <select value={value} onChange={e=>onChange(e.target.value)}>{currencies.map(c=><option key={c}>{c}</option>)}</select>; }
 
@@ -2228,22 +2654,20 @@ function Settings({
   assumptions: FinancialAssumptions | null;
   allocationTargets: AllocationTarget[];
   categories: string[];
-  initialPage: "general" | "projections";
+  initialPage: "general";
   brokers: Broker[];
   positions: Position[];
   onSettingsChanged: () => Promise<void>;
   onCleaned: (text: string) => Promise<void>;
   onReset: () => void;
 }) {
-  const [settingsPage, setSettingsPage] = useState<"general" | "brokers" | "fx" | "projections" | "fees" | "allocation-types">(initialPage);
+  const [settingsPage, setSettingsPage] = useState<"general" | "brokers" | "fx" | "allocation-types">(initialPage);
   return (
     <section className="stack">
-      <WorkspaceTabs tabs={[{id:"general",label:"General"},{id:"brokers",label:"Brokers"},{id:"fx",label:"FX"},{id:"allocation-types",label:"Allocation types"},{id:"projections",label:"Expenses & Projections"},{id:"fees",label:"Fees"}]} active={settingsPage} onChange={id => setSettingsPage(id as typeof settingsPage)} />
+      <WorkspaceTabs tabs={[{id:"general",label:"General"},{id:"brokers",label:"Brokers"},{id:"fx",label:"FX"},{id:"allocation-types",label:"Allocation types"}]} active={settingsPage} onChange={id => setSettingsPage(id as typeof settingsPage)} />
       {settingsPage === "brokers" && <BrokerSettings brokers={brokers} onChanged={onSettingsChanged} />}
       {settingsPage === "fx" && <FxSettings currency={currency} fxRates={fxRates} onChanged={onSettingsChanged} />}
       {settingsPage === "allocation-types" && <AllocationCategorySettings categories={categories} onChanged={onSettingsChanged} />}
-      {settingsPage === "projections" && <ProjectionSettings assumptions={assumptions} targets={allocationTargets} categories={categories} currency={currency?.display_currency || "USD"} onChanged={onSettingsChanged} />}
-      {settingsPage === "fees" && currency && <FeesPage positions={positions} currency={currency.display_currency} />}
       {settingsPage === "general" && <>
       <div className="panel settings">
         <h2>Local Privacy</h2>
@@ -2309,21 +2733,24 @@ export function BrokerSettings({ brokers, onChanged }: { brokers: Broker[]; onCh
     <div className="buttonRow left"><button className="secondary" disabled={!sampleCsv || busy} onClick={runPreview}><RefreshCw size={16}/> Preview configuration</button><button className="primaryButton brokerCommitButton" disabled={busy} onClick={save}><Save size={16}/> Save broker</button></div>{error && <div className="error">{error}</div>}{preview && <><div className={preview.valid ? "notice" : "errorList"}>{preview.valid ? `${preview.rows.length} normalized security rows are valid.` : preview.errors.map(item => <div key={item}>{item}</div>)}</div><p className="disclosure">Showing the first 25 normalized rows. Each column shows canonical field ← CSV column.</p><div className="tableWrap"><table><thead><tr><th>Row</th>{Object.entries(preview.mappings).map(([field, column]) => <th key={field}>{fieldLabels[field] || field}<br/><small>← {column}</small></th>)}</tr></thead><tbody>{preview.rows.slice(0,25).map(row=><tr key={row.row_number}><td>{row.row_number}</td>{Object.keys(preview.mappings).map(field => <td key={field}>{String((row as unknown as Record<string, unknown>)[field] ?? "—")}</td>)}</tr>)}</tbody></table></div>{preview.invalid_rows.length>0&&<div className="errorList">{preview.invalid_rows.map(row=><div key={row.row_number}>Row {row.row_number}: {Object.values(row.field_errors).flat().join(" ")}</div>)}</div>}</>}</section></section>;
 }
 
-function ProjectionSettings({ assumptions, targets, categories, currency, onChanged }: { assumptions: FinancialAssumptions | null; targets: AllocationTarget[]; categories: string[]; currency: string; onChanged: () => Promise<void> }) {
+export function ProjectionSettings({ insights, assumptions, scheduledExpenses, currency, onChanged }: { insights: Insights; assumptions: FinancialAssumptions | null; scheduledExpenses: ScheduledExpense[]; currency: string; onChanged: () => Promise<void> }) {
   const [form, setForm] = useState<FinancialAssumptions>(assumptions || {});
+  const blankExpense = (): ScheduledExpenseInput => ({name:"",expense_type:"one_time",amount:0,currency,expense_date:"",start_date:"",end_date:""});
+  const [expense, setExpense] = useState<ScheduledExpenseInput>(blankExpense()); const [editingExpense, setEditingExpense] = useState<number|null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setForm(assumptions || {}), [assumptions]);
   async function save() { try { setError(null); await api.saveAssumptions(form); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not save assumptions."); } }
   const fields: Array<[keyof FinancialAssumptions, string, string]> = [
-    ["monthly_expenses", "Monthly household expenses", "amount"], ["monthly_household_contribution", "Monthly investment contribution", "amount"],
+    ["current_age", "Current age", "years"], ["end_age", "End age", "years"], ["monthly_expenses", "Monthly household expenses", "amount"], ["monthly_household_contribution", "Monthly investment contribution", "amount"],
     ["expected_annual_return", "Expected annual return", "percent"], ["annual_volatility", "Annual volatility", "percent"], ["inflation_rate", "Inflation", "percent"],
     ["short_term_tax_rate", "Short-term indicative tax", "percent"], ["long_term_tax_rate", "Long-term indicative tax", "percent"], ["long_term_holding_days", "Long-term holding days", "days"]
   ];
-  return <section className="panel"><h2>Expenses & Projections</h2><p>Forecasts become available after return, volatility, inflation, and monthly contribution are completed. Values are assumptions, not advice.</p>
-    <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{kind === "amount" ? `${label} (${currency})` : label}<input type="number" min="0" step="0.01" value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
-    <div className="buttonRow left"><button className="primaryButton" onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}
-    <AllocationTargetSettings targets={targets} categories={categories} onChanged={onChanged} />
-  </section>;
+  async function saveExpense() { try { setError(null); if(editingExpense) await api.updateScheduledExpense(editingExpense, expense); else await api.createScheduledExpense(expense); setExpense(blankExpense()); setEditingExpense(null); await onChanged(); } catch(e) { setError(e instanceof Error ? e.message : "Could not save scheduled expense."); } }
+  function edit(item: ScheduledExpense) { setEditingExpense(item.id); setExpense({...item}); }
+  return <section className="stack"><ProjectionGuidancePage insights={insights}/><section className="panel"><h2>Expenses & Projections</h2><p>Lifetime projections use all financial assets, recurring spending, and the scheduled expenses below. Values are assumptions, not advice.</p>
+    <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{kind === "amount" ? `${label} (${currency})` : label}<input type="number" min="0" step={kind === "years" ? "1" : "0.01"} value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
+    <div className="buttonRow left"><button className="primaryButton" onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}</section>
+    <section className="panel"><div className="panelHeader"><h2>{editingExpense ? "Edit scheduled expense" : "Scheduled expenses"}</h2></div><div className="formGrid"><label>Name<input value={expense.name} onChange={e=>setExpense({...expense,name:e.target.value})}/></label><label>Type<select value={expense.expense_type} onChange={e=>setExpense({...expense,expense_type:e.target.value as ScheduledExpenseInput["expense_type"]})}><option value="one_time">One-time dated expense</option><option value="date_range">Date-range total</option></select></label><label>Amount<input type="number" min="0" value={expense.amount} onChange={e=>setExpense({...expense,amount:Number(e.target.value)})}/></label><label>Currency<CurrencyInput value={expense.currency} onChange={value=>setExpense({...expense,currency:value})} currencies={supportedCurrencies}/></label>{expense.expense_type==="one_time"?<label>Date<input type="date" value={expense.expense_date||""} onChange={e=>setExpense({...expense,expense_date:e.target.value})}/></label>:<><label>Start date<input type="date" value={expense.start_date||""} onChange={e=>setExpense({...expense,start_date:e.target.value})}/></label><label>End date<input type="date" value={expense.end_date||""} onChange={e=>setExpense({...expense,end_date:e.target.value})}/></label></>}</div><div className="buttonRow left"><button onClick={saveExpense}><Save size={16}/>{editingExpense?"Update expense":"Add expense"}</button>{editingExpense&&<button className="secondary" onClick={()=>{setEditingExpense(null);setExpense(blankExpense());}}>Cancel</button>}</div><p className="disclosure">Date-range amounts are totals in today’s money, spread evenly across the inclusive months and inflated in the projection.</p><div className="tableWrap"><table><thead><tr><th>Name</th><th>Schedule</th><th>Amount</th><th></th></tr></thead><tbody>{scheduledExpenses.map(item=><tr key={item.id}><td>{item.name}</td><td>{item.expense_type === "one_time" ? item.expense_date : `${item.start_date} – ${item.end_date}`}</td><td>{money(item.amount,item.currency)}</td><td><button className="iconOnly" onClick={()=>edit(item)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deleteScheduledExpense(item.id);await onChanged();}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 
 function AllocationTargetSettings({ targets, categories, onChanged }: { targets: AllocationTarget[]; categories: string[]; onChanged: () => Promise<void> }) {
@@ -2618,7 +3045,7 @@ export function RiskPage({positions,currency}:{positions:Position[];currency:str
   async function importCsv(){if(!selected)return;try{const lines=csv.trim().split(/\r?\n/).filter(Boolean);const start=lines[0]?.toLowerCase().includes("date")?1:0;const observations=lines.slice(start).map(line=>{const [date,raw]=line.split(",").map(x=>x.trim());return {date,adjusted_close:Number(raw)};});if(observations.length<2||observations.some(o=>!o.date||!Number.isFinite(o.adjusted_close)||o.adjusted_close<=0))throw new Error("Use CSV rows: date,adjusted_close.");if(selected.startsWith("security:")){const id=Number(selected.split(":")[1]);const security=securities.find(s=>s.security_id===id);await api.importMarketHistory(id,{symbol:security?.symbol||security?.security_name||"MANUAL",currency:security?.currency||currency,observations});}else if(selected==="benchmark"){await api.saveRiskSettings(settings);const symbol=settings.benchmark_symbol||analysis?.benchmark_symbol||"^GSPC";await api.importManualMarketSeries({series_key:`benchmark:${symbol}`,series_type:"benchmark",symbol,currency:settings.benchmark_currency||currency,observations});}else{const fxCurrency=selected.split(":")[1];await api.importManualMarketSeries({series_key:`fx:USD:${fxCurrency}`,series_type:"fx",symbol:`USD${fxCurrency}=X`,currency:fxCurrency,observations});}setMessage(`${observations.length} manual observations saved.`);await load();}catch(e){setError(e instanceof Error?e.message:"History import failed.");}}
   const names=Object.fromEntries(securities.map(s=>[s.security_id,s.security_name]));
   return <section className="stack"><section className="panel"><div className="panelHeader"><div><p className="eyebrow">Five-year adjusted daily history</p><h2>Risk settings and data</h2></div><button disabled={busy} onClick={refresh}><RefreshCw size={15}/>Refresh all histories</button></div><div className="formGrid"><label>Benchmark symbol<input value={settings.benchmark_symbol||""} onChange={e=>setSettings({...settings,benchmark_symbol:e.target.value})}/></label><label>Benchmark currency<select value={settings.benchmark_currency||currency} onChange={e=>setSettings({...settings,benchmark_currency:e.target.value})}>{supportedCurrencies.map(c=><option key={c}>{c}</option>)}</select></label><label>Minimum observations<input type="number" min="20" value={settings.minimum_observations} onChange={e=>setSettings({...settings,minimum_observations:Number(e.target.value)})}/></label></div><button onClick={saveSettings}>Save settings</button><h3>Offline adjusted-price import</h3><div className="formGrid"><label>Series<select value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Select series</option>{securities.map(s=><option key={s.security_id} value={`security:${s.security_id}`}>{s.security_name}</option>)}<option value="benchmark">Benchmark: {settings.benchmark_symbol}</option>{supportedCurrencies.filter(c=>c!=="USD").map(c=><option key={c} value={`fx:${c}`}>FX: USD/{c}</option>)}</select></label><label>CSV: date,adjusted_close<textarea value={csv} onChange={e=>setCsv(e.target.value)}/></label></div><button className="secondary" disabled={!selected} onClick={importCsv}>Import history</button>{message&&<div className="notice">{message}</div>}{error&&<div className="error">{error}</div>}</section>
-    {analysis&&<><div className="metricGrid"><MetricCard label="History coverage" value={pct(analysis.coverage_percent)}/><MetricCard label="Covered volatility" value={pct(analysis.covered_portfolio_volatility_percent)}/><MetricCard label={`Beta vs ${analysis.benchmark_symbol}`} value={analysis.covered_portfolio_beta?.toFixed(2)||"-"}/><MetricCard label="Covered max drawdown" value={pct(analysis.covered_portfolio_max_drawdown_percent)}/></div><section className="panel"><h2>Holding risk decomposition</h2><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Weight</th><th>Volatility</th><th>Beta</th><th>Risk contribution</th><th>Drawdown</th><th>History</th><th>Confidence</th></tr></thead><tbody>{analysis.holdings.map(row=><tr key={row.security_id}><td>{row.name}</td><td>{pct(row.portfolio_weight_percent)}</td><td>{pct(row.annualized_volatility_percent)}</td><td>{row.beta?.toFixed(2)||"-"}</td><td>{pct(row.risk_contribution_percent)}</td><td>{pct(row.max_drawdown_percent)}</td><td title={row.warning||""}>{row.observation_count}</td><td>{row.confidence}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Largest correlations</h2><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Holding</th><th>Correlation</th><th>Observations</th></tr></thead><tbody>{analysis.correlations.slice(0,20).map(row=><tr key={`${row.left_security_id}-${row.right_security_id}`}><td>{names[row.left_security_id]||row.left_security_id}</td><td>{names[row.right_security_id]||row.right_security_id}</td><td>{row.correlation.toFixed(3)}</td><td>{row.observation_count}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{analysis.warnings.map(w=><li key={w}>{w}</li>)}</ul></section></>}</section>;
+    {analysis&&<><div className="metricGrid"><MetricCard label="History coverage" value={pct(analysis.coverage_percent)}/><MetricCard label="Covered volatility" value={pct(analysis.covered_portfolio_volatility_percent)}/><MetricCard label={`Beta vs ${analysis.benchmark_symbol}`} value={analysis.covered_portfolio_beta?.toFixed(2)||"-"}/><MetricCard label="Covered max drawdown" value={pct(analysis.covered_portfolio_max_drawdown_percent)}/></div><RiskScatterPlot holdings={analysis.holdings}/><CorrelationHeatmap holdings={analysis.holdings} correlations={analysis.correlations}/><section className="panel"><h2>Holding risk decomposition</h2><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Weight</th><th>Volatility</th><th>Beta</th><th>Risk contribution</th><th>Drawdown</th><th>History</th><th>Confidence</th></tr></thead><tbody>{analysis.holdings.map(row=><tr key={row.security_id}><td>{row.name}</td><td>{pct(row.portfolio_weight_percent)}</td><td>{pct(row.annualized_volatility_percent)}</td><td>{row.beta?.toFixed(2)||"-"}</td><td>{pct(row.risk_contribution_percent)}</td><td>{pct(row.max_drawdown_percent)}</td><td title={row.warning||""}>{row.observation_count}</td><td>{row.confidence}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Largest correlations</h2><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Holding</th><th>Correlation</th><th>Observations</th></tr></thead><tbody>{analysis.correlations.slice(0,20).map(row=><tr key={`${row.left_security_id}-${row.right_security_id}`}><td>{names[row.left_security_id]||row.left_security_id}</td><td>{names[row.right_security_id]||row.right_security_id}</td><td>{row.correlation.toFixed(3)}</td><td>{row.observation_count}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{analysis.warnings.map(w=><li key={w}>{w}</li>)}</ul></section></>}</section>;
 }
 
 export function FeesPage({positions,currency}:{positions:Position[];currency:string}) {
@@ -2634,5 +3061,5 @@ export function FeesPage({positions,currency}:{positions:Position[];currency:str
   return <section className="stack"><section className="panel"><div className="panelHeader"><div><p className="eyebrow">Manual values are authoritative</p><h2>Security expense ratios</h2></div></div><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Expense ratio %</th><th>Source</th><th>Freshness</th><th></th></tr></thead><tbody>{securityFees.map(row=><tr key={row.security_id}><td>{row.security_name}</td><td><input type="number" min="0" step="0.001" value={ratios[row.security_id]??""} onChange={e=>setRatios({...ratios,[row.security_id]:e.target.value})}/></td><td>{row.source}</td><td>{row.stale?"Stale / missing":"Current"}</td><td><div className="buttonRow compact"><button disabled={busy} onClick={()=>saveRatio(row.security_id)}>Save manual</button><button className="secondary" disabled={busy} onClick={()=>publicRatio(row.security_id)}>Public draft</button><button className="secondary" disabled={busy||!publicDrafts.has(row.security_id)} onClick={()=>acceptRatio(row.security_id)}>Accept public</button></div></td></tr>)}</tbody></table></div>{message&&<div className="notice">{message}</div>}{error&&<div className="error">{error}</div>}</section>
     <section className="panel"><h2>Advisory and account fees</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Type<select value={form.fee_type} onChange={e=>setForm({...form,fee_type:e.target.value as PortfolioFeeInput["fee_type"]})}><option value="advisory_percent">Advisory percentage</option><option value="fixed_account">Fixed account fee</option></select></label>{form.fee_type==="advisory_percent"?<label>Annual %<input type="number" min="0" step="0.01" value={form.annual_percent??""} onChange={e=>setForm({...form,annual_percent:Number(e.target.value),annual_amount:null})}/></label>:<><label>Annual amount ({form.currency})<input type="number" min="0" value={form.annual_amount??""} onChange={e=>setForm({...form,annual_amount:Number(e.target.value),annual_percent:null})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{supportedCurrencies.map(c=><option key={c}>{c}</option>)}</select></label></>}</div><button disabled={busy||!form.name.trim()} onClick={addFee}><Plus size={15}/>Add fee</button>{analysis&&<div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Annual charge</th><th>Status</th><th></th></tr></thead><tbody>{analysis.portfolio_fees.map(fee=><tr key={fee.id}><td>{fee.name}</td><td>{fee.fee_type.replace("_"," ")}</td><td>{fee.fee_type==="advisory_percent"?pct(fee.annual_percent):money(fee.annual_amount,fee.currency)}</td><td>{fee.enabled?"Active":"Paused"}</td><td><div className="buttonRow compact"><button className="secondary" onClick={async()=>{await api.updatePortfolioFee(fee.id,{name:fee.name,fee_type:fee.fee_type,annual_percent:fee.annual_percent,annual_amount:fee.annual_amount,currency:fee.currency,enabled:!fee.enabled});await load();}}>{fee.enabled?"Pause":"Enable"}</button><button className="iconOnly" onClick={async()=>{await api.deletePortfolioFee(fee.id);await load();}}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table></div>}</section>
     <section className="panel"><h2>Cash reserve</h2><div className="formGrid"><label>Reserve target (months of expenses in {currency})<input type="number" min="0" value={reserveMonths} onChange={e=>setReserveMonths(Number(e.target.value))}/></label></div><button onClick={saveReserve}>Save reserve target</button></section>
-    {analysis&&<><div className="metricGrid"><MetricCard label="Estimated annual fees" value={money(analysis.total_annual_fees,analysis.display_currency)}/><MetricCard label="Annual fee share" value={pct(analysis.annual_fee_percent)}/><MetricCard label="Fund expenses" value={money(analysis.annual_fund_expenses,analysis.display_currency)}/><MetricCard label="Advisory + fixed" value={money(analysis.annual_advisory_fees+analysis.annual_fixed_fees,analysis.display_currency)}/><MetricCard label="Potential idle cash" value={analysis.potential_idle_cash==null?"Set expenses":money(analysis.potential_idle_cash,analysis.display_currency)}/><MetricCard label="Potential annual cash drag" value={analysis.potential_cash_drag==null?"Set return":money(analysis.potential_cash_drag,analysis.display_currency)}/></div><section className="panel"><h2>Long-term cost projection</h2><div className="tableWrap"><table><thead><tr><th>Horizon</th><th>Nominal fees paid</th><th>Ending value before fees</th><th>Ending value after fees</th><th>Opportunity cost</th></tr></thead><tbody>{analysis.projections.map(row=><tr key={row.years}><td>{row.years} years</td><td>{money(row.cumulative_nominal_fees,analysis.display_currency)}</td><td>{money(row.ending_value_without_fees,analysis.display_currency)}</td><td>{money(row.ending_value_after_fees,analysis.display_currency)}</td><td>{money(row.opportunity_cost,analysis.display_currency)}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{analysis.warnings.map(w=><li key={w}>{w}</li>)}</ul></section></>}</section>;
+    {analysis&&<><div className="metricGrid"><MetricCard label="Estimated annual fees" value={money(analysis.total_annual_fees,analysis.display_currency)}/><MetricCard label="Annual fee share" value={pct(analysis.annual_fee_percent)}/><MetricCard label="Fund expenses" value={money(analysis.annual_fund_expenses,analysis.display_currency)}/><MetricCard label="Advisory + fixed" value={money(analysis.annual_advisory_fees+analysis.annual_fixed_fees,analysis.display_currency)}/><MetricCard label="Potential idle cash" value={analysis.potential_idle_cash==null?"Set expenses":money(analysis.potential_idle_cash,analysis.display_currency)}/><MetricCard label="Potential annual cash drag" value={analysis.potential_cash_drag==null?"Set return":money(analysis.potential_cash_drag,analysis.display_currency)}/></div><section className="panel"><h2>Long-term cost projection</h2>{analysis.projections.length > 1 && <ZoomableFeeProjectionChart data={analysis.projections} currency={analysis.display_currency}/>}<div className="tableWrap"><table><thead><tr><th>Horizon</th><th>Nominal fees paid</th><th>Ending value before fees</th><th>Ending value after fees</th><th>Opportunity cost</th></tr></thead><tbody>{analysis.projections.map(row=><tr key={row.years}><td>{row.years} years</td><td>{money(row.cumulative_nominal_fees,analysis.display_currency)}</td><td>{money(row.ending_value_without_fees,analysis.display_currency)}</td><td>{money(row.ending_value_after_fees,analysis.display_currency)}</td><td>{money(row.opportunity_cost,analysis.display_currency)}</td></tr>)}</tbody></table></div></section><section className="panel"><h2>Assumptions and limitations</h2><ul className="assumptionList">{analysis.warnings.map(w=><li key={w}>{w}</li>)}</ul></section></>}</section>;
 }
