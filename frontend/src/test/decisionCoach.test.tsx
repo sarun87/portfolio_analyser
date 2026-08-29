@@ -13,14 +13,14 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock("../lib/api", () => ({ api: apiMock }));
 
-import { AllocationPolicyPage, BrokerSettings, ExposureInsights, ExposurePage, FeesPage, GoalsPage, InsightsPage, MobilePositionCard, ProjectionSettings, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
+import { AllocationPolicyPage, BrokerSettings, ExposureInsights, ExposurePage, FeesPage, GoalsPage, InsightsPage, MobilePositionCard, PositionsTable, ProfitLossTable, ProjectionSettings, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
 import type { GoalsSummary, Insights, Position } from "../lib/types";
 
 const fund = {
   id: 1, security_id: 10, broker_name: "HDFC", account_mask: "****1", security_name: "Index Fund", symbol: "FUND",
   security_type: "ETF", allocation_category: "Large Cap", sector: "Diversified", exchange: "NSE",
-  investment_country: "India", snapshot_date: "2026-08-01", units: 1, total_fmv: 8350,
-  total_fmv_display: 100, currency: "INR", display_currency: "USD"
+  investment_country: "India", snapshot_date: "2026-08-01", units: 1, total_cost_basis: 7500, total_fmv: 8350,
+  total_cost_basis_display: 90, total_fmv_display: 100, currency: "INR", display_currency: "USD"
 } as Position;
 
 const insights = {
@@ -121,7 +121,7 @@ describe("decision coach workspaces", () => {
   });
 
   it("uses per-unit values in mobile position cards", () => {
-    render(<MobilePositionCard position={{...fund, per_unit_fmv: 25, per_unit_cost_basis: 20}} moneyMode="per-unit" canRefresh onRefresh={vi.fn()} />);
+    render(<MobilePositionCard position={{...fund, per_unit_fmv: 25, per_unit_cost_basis: 20, per_unit_fmv_display: 25, per_unit_cost_basis_display: 20, display_currency: "INR"}} moneyMode="per-unit" canRefresh onRefresh={vi.fn()} />);
     expect(screen.getByText("₹25.00")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", {name:"FUND details"}));
     expect(screen.getByText("Value / unit")).toBeInTheDocument();
@@ -129,8 +129,47 @@ describe("decision coach workspaces", () => {
   });
 
   it("uses Indian digit grouping for INR amounts", () => {
-    render(<MobilePositionCard position={{...fund, per_unit_fmv: 1_000_000, per_unit_cost_basis: 20}} moneyMode="per-unit" canRefresh onRefresh={vi.fn()} />);
+    render(<MobilePositionCard position={{...fund, per_unit_fmv: 1_000_000, per_unit_cost_basis: 20, per_unit_fmv_display: 1_000_000, per_unit_cost_basis_display: 20, display_currency: "INR"}} moneyMode="per-unit" canRefresh onRefresh={vi.fn()} />);
     expect(screen.getByText("₹10,00,000.00")).toBeInTheDocument();
+  });
+
+  it("uses global display-currency amounts in portfolio and profit/loss tables", () => {
+    const convertedPosition = {
+      ...fund,
+      total_cost_basis: 83_000,
+      total_fmv: 166_000,
+      total_cost_basis_display: 1_000,
+      total_fmv_display: 2_000,
+      unrealized_gain_loss_native: 83_000,
+      unrealized_gain_loss: 1_000
+    };
+    render(<PositionsTable positions={[convertedPosition]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} currencyMode="display" />);
+    expect(screen.getByRole("columnheader", {name:"Total Cost Basis (USD)"})).toBeInTheDocument();
+    expect(screen.getByText("$1,000.00")).toBeInTheDocument();
+    expect(screen.getAllByText("$2,000.00")).toHaveLength(2);
+    cleanup();
+    render(<ProfitLossTable positions={[convertedPosition]} currencyMode="display" />);
+    expect(screen.getByRole("columnheader", {name:/^P\/L \(USD\)/})).toBeInTheDocument();
+    expect(screen.getAllByText("$1,000.00")).toHaveLength(3);
+    expect(screen.getByText("$2,000.00")).toBeInTheDocument();
+  });
+
+  it("defaults portfolio tables to each position's source currency", () => {
+    const convertedPosition = {...fund, total_cost_basis: 83_000, total_fmv: 166_000, total_cost_basis_display: 1_000, total_fmv_display: 2_000, unrealized_gain_loss_native: 83_000, unrealized_gain_loss: 1_000};
+    render(<PositionsTable positions={[convertedPosition]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} />);
+    expect(screen.getByRole("columnheader", {name:"Total FMV (Position currency)"})).toBeInTheDocument();
+    expect(screen.getAllByText("₹1,66,000.00")).toHaveLength(2);
+    cleanup();
+    render(<ProfitLossTable positions={[convertedPosition]} />);
+    expect(screen.getByRole("columnheader", {name:/^P\/L \(Position currency\)/})).toBeInTheDocument();
+    expect(screen.getAllByText("₹83,000.00")).toHaveLength(3);
+  });
+
+  it("lets table pages opt into the global currency through their checkbox", () => {
+    const onCurrencyModeChange = vi.fn();
+    render(<PositionsTable positions={[fund]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} currencyMode="position" onCurrencyModeChange={onCurrencyModeChange} />);
+    fireEvent.click(screen.getByLabelText("Use position currency"));
+    expect(onCurrencyModeChange).toHaveBeenCalledWith("display");
   });
 
   it("routes each data-quality action with its structured filter", () => {

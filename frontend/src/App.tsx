@@ -118,6 +118,7 @@ const fallbackAllocationCategories = ["Large Cap", "Mid Cap", "Small Cap", "Hybr
 const sectors = ["Communication Services", "Consumer Discretionary", "Consumer Staples", "Energy", "Financials", "Health Care", "Industrials", "Information Technology", "Materials", "Real Estate", "Utilities", "Diversified", "Unclassified"];
 
 type PositionColumn = "broker" | "account" | "security" | "type" | "allocation" | "sector" | "country" | "exchange" | "snapshot" | "acquired" | "lot" | "units" | "cost_basis" | "fmv" | "currency";
+type TableCurrencyMode = "display" | "position";
 const positionColumns: Array<{ key: PositionColumn; label: string }> = [
   { key: "broker", label: "Broker" }, { key: "account", label: "Account" }, { key: "security", label: "Security" },
   { key: "type", label: "Type" }, { key: "allocation", label: "Allocation" }, { key: "country", label: "Country" },
@@ -528,6 +529,7 @@ export function App() {
   const [planningSection, setPlanningSection] = useSessionValue<"goals" | "expenses-projections" | "fees">("portfolio-planning-section", "goals", ["goals", "expenses-projections", "fees"]);
   const [positionFilter, setPositionFilter] = useState("");
   const [positionStructuredFilter, setPositionStructuredFilter] = useState<PositionFilters>({});
+  const [tableCurrencyMode, setTableCurrencyMode] = useSessionValue<TableCurrencyMode>("portfolio-table-currency-mode", "position", ["display", "position"]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -699,7 +701,7 @@ export function App() {
                 <span>Currency</span>
                 <select
                   value={currency.display_currency}
-                  disabled={busy}
+                  disabled={busy || (view === "portfolio" && ["positions", "profit-loss"].includes(portfolioSection) && tableCurrencyMode === "position")}
                   onChange={(event) => changeDisplayCurrency(event.target.value)}
                 >
                   {currency.supported_currencies.map((item) => (
@@ -748,9 +750,9 @@ export function App() {
           />
         )}
         {view === "portfolio" && <WorkspaceTabs tabs={[{id:"positions",label:"Positions"},{id:"profit-loss",label:"Profit/Loss"},{id:"allocation",label:"Allocation"},{id:"growth",label:"Growth"}]} active={portfolioSection} onChange={id => setPortfolioSection(id as typeof portfolioSection)} />}
-        {view === "portfolio" && portfolioSection === "profit-loss" && <ProfitLossTable positions={profitLoss} />}
+        {view === "portfolio" && portfolioSection === "profit-loss" && <ProfitLossTable positions={profitLoss} currencyMode={tableCurrencyMode} onCurrencyModeChange={setTableCurrencyMode} />}
         {view === "portfolio" && portfolioSection === "growth" && analytics && <GrowthView analytics={analytics} />}
-        {view === "portfolio" && portfolioSection === "positions" && <PositionsTable positions={positions} brokers={brokers} categories={allocationCategoryOptions} onRefresh={loadData} externalFilter={positionFilter} structuredFilter={positionStructuredFilter} onExternalFilterChange={setPositionFilter} onStructuredFilterChange={setPositionStructuredFilter} />}
+        {view === "portfolio" && portfolioSection === "positions" && <PositionsTable positions={positions} brokers={brokers} categories={allocationCategoryOptions} onRefresh={loadData} externalFilter={positionFilter} structuredFilter={positionStructuredFilter} onExternalFilterChange={setPositionFilter} onStructuredFilterChange={setPositionStructuredFilter} currencyMode={tableCurrencyMode} onCurrencyModeChange={setTableCurrencyMode} />}
         {view === "portfolio" && portfolioSection === "allocation" && analytics && (
           <AllocationView
             analytics={analytics}
@@ -1090,7 +1092,7 @@ function optionsWithCurrent(options: string[], current: string) {
   return options.includes(current) ? options : [current, ...options].filter(Boolean);
 }
 
-function PositionsTable({
+export function PositionsTable({
   positions,
   brokers,
   categories,
@@ -1098,7 +1100,9 @@ function PositionsTable({
   externalFilter,
   structuredFilter,
   onStructuredFilterChange,
-  onExternalFilterChange
+  onExternalFilterChange,
+  currencyMode = "position",
+  onCurrencyModeChange
 }: {
   positions: Position[];
   brokers: Broker[];
@@ -1108,6 +1112,8 @@ function PositionsTable({
   structuredFilter: PositionFilters;
   onExternalFilterChange: (value: string) => void;
   onStructuredFilterChange: (value: PositionFilters) => void;
+  currencyMode?: TableCurrencyMode;
+  onCurrencyModeChange?: (mode: TableCurrencyMode) => void;
 }) {
   const [query, setQuery] = useState(externalFilter);
   const [refreshing, setRefreshing] = useState<number | null>(null);
@@ -1125,6 +1131,7 @@ function PositionsTable({
   const [showExitPrompt, setShowExitPrompt] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [visibleColumns, setVisibleColumns] = useState<PositionColumn[]>(storedPositionColumns);
+  const displayedCurrencyLabel = currencyMode === "position" ? "Position currency" : positions[0]?.display_currency || "USD";
 
   useEffect(() => {
     window.localStorage.setItem(positionColumnsStorageKey, JSON.stringify(visibleColumns));
@@ -1161,12 +1168,20 @@ function PositionsTable({
         .some((value) => String(value).toLowerCase().includes(needle)) && matches(position, structuredFilter)
     );
     return [...rows].sort((left, right) => {
-      const leftValue = sort.key === "security" ? left.symbol || left.security_name : left[sort.key as keyof Position];
-      const rightValue = sort.key === "security" ? right.symbol || right.security_name : right[sort.key as keyof Position];
+      const sortValue = (position: Position) => {
+        if (sort.key === "security") return position.symbol || position.security_name;
+        if (sort.key === "per_unit_cost_basis") return currencyMode === "position" ? position.per_unit_cost_basis : position.per_unit_cost_basis_display ?? position.per_unit_cost_basis;
+        if (sort.key === "total_cost_basis") return currencyMode === "position" ? position.total_cost_basis : position.total_cost_basis_display ?? position.total_cost_basis;
+        if (sort.key === "per_unit_fmv") return currencyMode === "position" ? position.per_unit_fmv : position.per_unit_fmv_display ?? position.per_unit_fmv;
+        if (sort.key === "total_fmv") return currencyMode === "position" ? position.total_fmv : position.total_fmv_display ?? position.total_fmv;
+        return position[sort.key as keyof Position];
+      };
+      const leftValue = sortValue(left);
+      const rightValue = sortValue(right);
       const result = compareValues(leftValue, rightValue);
       return sort.direction === "asc" ? result : -result;
     });
-  }, [positions, query, sort, structuredFilter]);
+  }, [currencyMode, positions, query, sort, structuredFilter]);
 
   useEffect(() => {
     const visibleIds = new Set(filtered.map((position) => position.id));
@@ -1338,6 +1353,7 @@ function PositionsTable({
       <div className="panelHeader">
         <h2>All Positions</h2>
         <div className="tableTools">
+          <label className="tableCurrencyToggle"><input type="checkbox" checked={currencyMode === "position"} disabled={!onCurrencyModeChange} onChange={(event) => onCurrencyModeChange?.(event.target.checked ? "position" : "display")} />Use position currency</label>
           <details className="columnPicker">
             <summary>Columns ({visibleColumns.length}/{positionColumns.length})</summary>
             <div className="columnPickerMenu">
@@ -1425,9 +1441,9 @@ function PositionsTable({
                   <SortableTh label="Total Cost Basis" sortKey="total_cost_basis" sort={sort} onSort={setSort} numeric />
                 </>
               ) : (
-                <SortableTh label={moneyMode === "total" ? "Total Cost Basis" : "Per Unit Cost Basis"} sortKey={moneyMode === "total" ? "total_cost_basis" : "per_unit_cost_basis"} sort={sort} onSort={setSort} numeric />
+                <SortableTh label={`${moneyMode === "total" ? "Total Cost Basis" : "Per Unit Cost Basis"} (${displayedCurrencyLabel})`} sortKey={moneyMode === "total" ? "total_cost_basis" : "per_unit_cost_basis"} sort={sort} onSort={setSort} numeric />
               ))}
-              {columnVisible("fmv") && (editMode ? <><SortableTh label="Per Unit FMV" sortKey="per_unit_fmv" sort={sort} onSort={setSort} numeric /><SortableTh label="Total FMV" sortKey="total_fmv" sort={sort} onSort={setSort} numeric /></> : <SortableTh label={moneyMode === "total" ? "Total FMV" : "Per Unit FMV"} sortKey={moneyMode === "total" ? "total_fmv" : "per_unit_fmv"} sort={sort} onSort={setSort} numeric />)}
+              {columnVisible("fmv") && (editMode ? <><SortableTh label="Per Unit FMV" sortKey="per_unit_fmv" sort={sort} onSort={setSort} numeric /><SortableTh label="Total FMV" sortKey="total_fmv" sort={sort} onSort={setSort} numeric /></> : <SortableTh label={`${moneyMode === "total" ? "Total FMV" : "Per Unit FMV"} (${displayedCurrencyLabel})`} sortKey={moneyMode === "total" ? "total_fmv" : "per_unit_fmv"} sort={sort} onSort={setSort} numeric />)}
               {columnVisible("currency") && <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={setSort} />}
               <th>Actions</th>
             </tr>
@@ -1506,9 +1522,9 @@ function PositionsTable({
                       <td className="num"><input className={inputClass(position, "total_cost_basis")} type="number" step="0.01" value={draft.total_cost_basis} onChange={(event) => updateDraft(position, { total_cost_basis: event.target.value })} /></td>
                     </>
                   ) : (
-                    <td className="num">{money(moneyMode === "total" ? position.total_cost_basis : position.per_unit_cost_basis, position.currency)}</td>
+                    <td className="num">{money(currencyMode === "position" ? moneyMode === "total" ? position.total_cost_basis : position.per_unit_cost_basis : moneyMode === "total" ? position.total_cost_basis_display ?? position.total_cost_basis : position.per_unit_cost_basis_display ?? position.per_unit_cost_basis, currencyMode === "position" ? position.currency : position.display_currency)}</td>
                   ))}
-                  {columnVisible("fmv") && (editMode ? <><td className="num"><input className={inputClass(position, "per_unit_fmv")} type="number" step="0.0001" value={draft.per_unit_fmv} onChange={(event) => updateDraft(position, { per_unit_fmv: event.target.value })} /></td><td className="num"><input className={inputClass(position, "total_fmv")} type="number" step="0.01" value={draft.total_fmv} onChange={(event) => updateDraft(position, { total_fmv: event.target.value })} /></td></> : <td className="num">{money(moneyMode === "total" ? position.total_fmv : position.per_unit_fmv, position.currency)}</td>)}
+                  {columnVisible("fmv") && (editMode ? <><td className="num"><input className={inputClass(position, "per_unit_fmv")} type="number" step="0.0001" value={draft.per_unit_fmv} onChange={(event) => updateDraft(position, { per_unit_fmv: event.target.value })} /></td><td className="num"><input className={inputClass(position, "total_fmv")} type="number" step="0.01" value={draft.total_fmv} onChange={(event) => updateDraft(position, { total_fmv: event.target.value })} /></td></> : <td className="num">{money(currencyMode === "position" ? moneyMode === "total" ? position.total_fmv : position.per_unit_fmv : moneyMode === "total" ? position.total_fmv_display ?? position.total_fmv : position.per_unit_fmv_display ?? position.per_unit_fmv, currencyMode === "position" ? position.currency : position.display_currency)}</td>)}
                   {columnVisible("currency") && <td>
                     {editMode ? (
                       <select className={inputClass(position, "currency")} value={draft.currency} onChange={(event) => updateDraft(position, { currency: event.target.value })}>
@@ -1538,7 +1554,7 @@ function PositionsTable({
         </table>
       </div>
       {Object.keys(structuredFilter).length > 0 && <div className="notice">Structured filter active. <button className="secondary" onClick={() => onStructuredFilterChange({})}>Clear filter</button></div>}
-      {!editMode && <div className="mobilePositionCards">{filtered.map(position => <MobilePositionCard key={position.id} position={position} moneyMode={moneyMode} refreshing={refreshing === position.security_id} canRefresh={canRefreshPrice(position)} onRefresh={() => refresh(position)} onDelete={() => remove(position)} />)}</div>}
+      {!editMode && <div className="mobilePositionCards">{filtered.map(position => <MobilePositionCard key={position.id} position={position} moneyMode={moneyMode} currencyMode={currencyMode} refreshing={refreshing === position.security_id} canRefresh={canRefreshPrice(position)} onRefresh={() => refresh(position)} onDelete={() => remove(position)} />)}</div>}
       {showExitPrompt && (
         <div className="modalBackdrop" role="presentation">
           <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="save-edits-title">
@@ -1586,18 +1602,21 @@ function SortableTh<T>({
   );
 }
 
-export function MobilePositionCard({ position, moneyMode = "total", refreshing, canRefresh, onRefresh, onDelete }: { position: Position; moneyMode?: "total" | "per-unit"; refreshing?: boolean; canRefresh?: boolean; onRefresh?: () => void; onDelete?: () => void }) {
+export function MobilePositionCard({ position, moneyMode = "total", currencyMode = "position", refreshing, canRefresh, onRefresh, onDelete }: { position: Position; moneyMode?: "total" | "per-unit"; currencyMode?: TableCurrencyMode; refreshing?: boolean; canRefresh?: boolean; onRefresh?: () => void; onDelete?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const toggle = () => setExpanded(current => !current);
   const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
   };
   const isProfitLoss = !onRefresh;
-  const cost = moneyMode === "total" ? position.total_cost_basis : position.per_unit_cost_basis; const value = moneyMode === "total" ? position.total_fmv : position.per_unit_fmv;
+  const currency = currencyMode === "position" ? position.currency : position.display_currency || position.currency;
+  const cost = currencyMode === "position" ? moneyMode === "total" ? position.total_cost_basis : position.per_unit_cost_basis : moneyMode === "total" ? position.total_cost_basis_display ?? position.total_cost_basis : position.per_unit_cost_basis_display ?? position.per_unit_cost_basis;
+  const value = currencyMode === "position" ? moneyMode === "total" ? position.total_fmv : position.per_unit_fmv : moneyMode === "total" ? position.total_fmv_display ?? position.total_fmv : position.per_unit_fmv_display ?? position.per_unit_fmv;
+  const gain = currencyMode === "position" ? position.unrealized_gain_loss_native : position.unrealized_gain_loss ?? position.unrealized_gain_loss_native;
   return <article className="mobileDataCard" role="button" tabIndex={0} aria-expanded={expanded} aria-label={`${position.symbol || position.security_name} details`} onClick={toggle} onKeyDown={onKeyDown}>
-    <div className="mobileCardSummary"><strong onClick={event => event.stopPropagation()}><SymbolLink position={position}/></strong><strong className={isProfitLoss ? ((position.unrealized_gain_loss_native || 0) >= 0 ? "good" : "bad") : ""}>{isProfitLoss ? money(position.unrealized_gain_loss_native, position.currency) : money(value, position.currency)}</strong></div>
+    <div className="mobileCardSummary"><strong onClick={event => event.stopPropagation()}><SymbolLink position={position}/></strong><strong className={isProfitLoss ? ((gain || 0) >= 0 ? "good" : "bad") : ""}>{isProfitLoss ? money(gain, currency) : money(value, currency)}</strong></div>
     <small>{isProfitLoss ? `${pct(position.unrealized_gain_loss_pct)} · ${position.broker_name}` : `${position.broker_name} · ${position.account_mask} · ${number(position.units)} units`}</small>
-    {expanded && <div className="mobileCardDetails"><dl>{isProfitLoss ? <><div><dt>Cost basis</dt><dd>{money(position.total_cost_basis, position.currency)}</dd></div><div><dt>Market value</dt><dd>{money(position.total_fmv, position.currency)}</dd></div><div><dt>Account</dt><dd>{position.account_mask}</dd></div></> : <><div><dt>{moneyMode === "total" ? "Cost basis" : "Cost / unit"}</dt><dd>{money(cost, position.currency)}</dd></div><div><dt>{moneyMode === "total" ? "Market value" : "Value / unit"}</dt><dd>{money(value, position.currency)}</dd></div><div><dt>Allocation</dt><dd>{position.allocation_category}</dd></div><div><dt>Snapshot</dt><dd>{position.snapshot_date}</dd></div></>}<div><dt>Lot</dt><dd>{position.lot_number || "-"}</dd></div></dl>{onRefresh && <button className="secondary" title={canRefresh ? "Refresh security price" : "No market-price refresh for this security"} disabled={refreshing || !canRefresh} onClick={event => { event.stopPropagation(); onRefresh(); }}><RefreshCw size={15}/>Refresh price</button>}{onDelete && <button className="secondary" onClick={event => { event.stopPropagation(); onDelete(); }}><Trash2 size={15}/>Delete history</button>}</div>}
+    {expanded && <div className="mobileCardDetails"><dl>{isProfitLoss ? <><div><dt>Cost basis</dt><dd>{money(currencyMode === "position" ? position.total_cost_basis : position.total_cost_basis_display ?? position.total_cost_basis, currency)}</dd></div><div><dt>Market value</dt><dd>{money(currencyMode === "position" ? position.total_fmv : position.total_fmv_display ?? position.total_fmv, currency)}</dd></div><div><dt>Account</dt><dd>{position.account_mask}</dd></div></> : <><div><dt>{moneyMode === "total" ? "Cost basis" : "Cost / unit"}</dt><dd>{money(cost, currency)}</dd></div><div><dt>{moneyMode === "total" ? "Market value" : "Value / unit"}</dt><dd>{money(value, currency)}</dd></div><div><dt>Allocation</dt><dd>{position.allocation_category}</dd></div><div><dt>Snapshot</dt><dd>{position.snapshot_date}</dd></div></>}<div><dt>Lot</dt><dd>{position.lot_number || "-"}</dd></div></dl>{onRefresh && <button className="secondary" title={canRefresh ? "Refresh security price" : "No market-price refresh for this security"} disabled={refreshing || !canRefresh} onClick={event => { event.stopPropagation(); onRefresh(); }}><RefreshCw size={15}/>Refresh price</button>}{onDelete && <button className="secondary" onClick={event => { event.stopPropagation(); onDelete(); }}><Trash2 size={15}/>Delete history</button>}</div>}
   </article>;
 }
 
@@ -1630,21 +1649,29 @@ function ProfitLossBubbleChart({ positions }: { positions: Position[] }) {
   return <div className="profitLossBubbleChart"><p className="disclosure">X shows total unrealized profit or loss and Y shows total investment value. The vertical line marks zero profit or loss; bubble area reflects the absolute profit or loss.</p><ScatterZoomControls zoom={zoom}/><ResponsiveContainer width="100%" height={410}><ScatterChart margin={{ top: 54, right: 24, bottom: 34, left: 18 }}><CartesianGrid strokeDasharray="3 3"/><XAxis type="number" dataKey="x" name="Profit / loss" domain={zoom.xDomain} tickFormatter={(value) => money(Number(value), currency)} label={{ value: "Profit / loss", position: "insideBottom", offset: -18 }}/><YAxis type="number" dataKey="y" name="Investment value" domain={zoom.yDomain} tickFormatter={(value) => money(Number(value), currency)} width={88} label={{ value: "Investment value", angle: -90, position: "insideLeft" }}/><ZAxis type="number" dataKey="bubbleSize" range={[70, 850]}/><ReferenceLine x={0} stroke="#64748b" strokeWidth={2}/><Tooltip cursor={{ strokeDasharray: "3 3" }} content={tooltip}/><Legend verticalAlign="top" height={32}/><Scatter name="Profit" data={sized.filter((row) => row.gain >= 0)} fill="#16a34a"/><Scatter name="Loss" data={sized.filter((row) => row.gain < 0)} fill="#dc2626"/></ScatterChart></ResponsiveContainer></div>;
 }
 
-function ProfitLossTable({ positions }: { positions: Position[] }) {
+export function ProfitLossTable({ positions, currencyMode = "position", onCurrencyModeChange }: { positions: Position[]; currencyMode?: TableCurrencyMode; onCurrencyModeChange?: (mode: TableCurrencyMode) => void }) {
   const [sort, setSort] = useState<SortState<Position>>({ key: "unrealized_gain_loss_native", direction: "desc" });
+  const displayedCurrencyLabel = currencyMode === "position" ? "Position currency" : positions[0]?.display_currency || "USD";
   const sorted = useMemo(
     () =>
       [...positions].sort((left, right) => {
-        const leftValue = sort.key === "security" ? left.symbol || left.security_name : left[sort.key as keyof Position];
-        const rightValue = sort.key === "security" ? right.symbol || right.security_name : right[sort.key as keyof Position];
+        const sortValue = (position: Position) => {
+          if (sort.key === "security") return position.symbol || position.security_name;
+          if (sort.key === "total_cost_basis") return currencyMode === "position" ? position.total_cost_basis : position.total_cost_basis_display ?? position.total_cost_basis;
+          if (sort.key === "total_fmv") return currencyMode === "position" ? position.total_fmv : position.total_fmv_display ?? position.total_fmv;
+          if (sort.key === "unrealized_gain_loss_native") return currencyMode === "position" ? position.unrealized_gain_loss_native : position.unrealized_gain_loss ?? position.unrealized_gain_loss_native;
+          return position[sort.key as keyof Position];
+        };
+        const leftValue = sortValue(left);
+        const rightValue = sortValue(right);
         const result = compareValues(leftValue, rightValue);
         return sort.direction === "asc" ? result : -result;
       }),
-    [positions, sort]
+    [currencyMode, positions, sort]
   );
   return (
     <section className="panel">
-      <h2>Unrealized Profit/Loss</h2>
+      <div className="panelHeader"><h2>Unrealized Profit/Loss</h2><label className="tableCurrencyToggle"><input type="checkbox" checked={currencyMode === "position"} disabled={!onCurrencyModeChange} onChange={(event) => onCurrencyModeChange?.(event.target.checked ? "position" : "display")} />Use position currency</label></div>
       <ProfitLossBubbleChart positions={positions} />
       <div className="tableWrap desktopDataTable">
         <table>
@@ -1654,9 +1681,9 @@ function ProfitLossTable({ positions }: { positions: Position[] }) {
               <SortableTh label="Broker" sortKey="broker_name" sort={sort} onSort={setSort} />
               <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={setSort} />
               <SortableTh label="Lot" sortKey="lot_number" sort={sort} onSort={setSort} />
-              <SortableTh label="Total Cost Basis" sortKey="total_cost_basis" sort={sort} onSort={setSort} numeric />
-              <SortableTh label="Total FMV" sortKey="total_fmv" sort={sort} onSort={setSort} numeric />
-              <SortableTh label="P/L" sortKey="unrealized_gain_loss_native" sort={sort} onSort={setSort} numeric />
+              <SortableTh label={`Total Cost Basis (${displayedCurrencyLabel})`} sortKey="total_cost_basis" sort={sort} onSort={setSort} numeric />
+              <SortableTh label={`Total FMV (${displayedCurrencyLabel})`} sortKey="total_fmv" sort={sort} onSort={setSort} numeric />
+              <SortableTh label={`P/L (${displayedCurrencyLabel})`} sortKey="unrealized_gain_loss_native" sort={sort} onSort={setSort} numeric />
               <SortableTh label="P/L %" sortKey="unrealized_gain_loss_pct" sort={sort} onSort={setSort} numeric />
             </tr>
           </thead>
@@ -1670,10 +1697,10 @@ function ProfitLossTable({ positions }: { positions: Position[] }) {
                 <td>{position.broker_name}</td>
                 <td>{position.account_mask}</td>
                 <td>{position.lot_number || "-"}</td>
-                <td className="num">{money(position.total_cost_basis, position.currency)}</td>
-                <td className="num">{money(position.total_fmv, position.currency)}</td>
-                <td className={`num ${(position.unrealized_gain_loss_native || 0) >= 0 ? "good" : "bad"}`}>
-                  {money(position.unrealized_gain_loss_native, position.currency)}
+                <td className="num">{money(currencyMode === "position" ? position.total_cost_basis : position.total_cost_basis_display ?? position.total_cost_basis, currencyMode === "position" ? position.currency : position.display_currency)}</td>
+                <td className="num">{money(currencyMode === "position" ? position.total_fmv : position.total_fmv_display ?? position.total_fmv, currencyMode === "position" ? position.currency : position.display_currency)}</td>
+                <td className={`num ${(currencyMode === "position" ? position.unrealized_gain_loss_native ?? 0 : position.unrealized_gain_loss ?? position.unrealized_gain_loss_native ?? 0) >= 0 ? "good" : "bad"}`}>
+                  {money(currencyMode === "position" ? position.unrealized_gain_loss_native : position.unrealized_gain_loss ?? position.unrealized_gain_loss_native, currencyMode === "position" ? position.currency : position.display_currency)}
                 </td>
                 <td className="num">{pct(position.unrealized_gain_loss_pct)}</td>
               </tr>
@@ -1681,7 +1708,7 @@ function ProfitLossTable({ positions }: { positions: Position[] }) {
           </tbody>
         </table>
       </div>
-      <div className="mobilePositionCards">{sorted.map(position => <MobilePositionCard key={position.id} position={position} />)}</div>
+      <div className="mobilePositionCards">{sorted.map(position => <MobilePositionCard key={position.id} position={position} currencyMode={currencyMode} />)}</div>
     </section>
   );
 }

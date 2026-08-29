@@ -644,6 +644,13 @@ button.dangerButton {
   justify-content: flex-end;
 }
 
+.tableCurrencyToggle {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .formGrid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
