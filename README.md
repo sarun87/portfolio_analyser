@@ -41,6 +41,22 @@ uvicorn backend.app.main:app --reload
 
 Then open `http://127.0.0.1:8000`.
 
+## Run with Docker
+
+Docker runs the application as an unprivileged process and bind-mounts `data/` and `logs/` from this directory, so portfolio data and outbound-request logs persist across container replacements.
+
+```bash
+./run_in_docker --build
+```
+
+This makes the app available only on the local machine at `http://127.0.0.1:8000`. To allow access from the local LAN, explicitly opt into HTTP and name the exact URL opened in the browser:
+
+```bash
+PORTFOLIO_TRUSTED_ORIGINS=http://192.168.1.25:8000 ./run_in_docker --insecure
+```
+
+The Dockerfile builds natively on x86_64 and ARM64 hosts, including Apple Silicon and ARM Linux. To publish one image for both Linux architectures, use the `docker buildx` command documented at the top of `Dockerfile`.
+
 For network-accessible production deployment with HTTPS, see [PRODUCTION_HTTPS.md](PRODUCTION_HTTPS.md).
 
 Portfolio data exists as SQLite only in memory while the application is unlocked. Committed state is stored in `data/portfolio.db.encrypted` as a passphrase-encrypted container; no plaintext SQLite database or WAL is written to disk. `data/auth.json` contains only the random KDF salt and encrypted passphrase verifier.

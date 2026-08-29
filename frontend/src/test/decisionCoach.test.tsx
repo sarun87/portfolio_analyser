@@ -128,6 +128,11 @@ describe("decision coach workspaces", () => {
     expect(screen.getByText("₹20.00")).toBeInTheDocument();
   });
 
+  it("uses Indian digit grouping for INR amounts", () => {
+    render(<MobilePositionCard position={{...fund, per_unit_fmv: 1_000_000, per_unit_cost_basis: 20}} moneyMode="per-unit" canRefresh onRefresh={vi.fn()} />);
+    expect(screen.getByText("₹10,00,000.00")).toBeInTheDocument();
+  });
+
   it("routes each data-quality action with its structured filter", () => {
     const onNavigate = vi.fn();
     const finding = {id:"quality",category:"data_quality",severity:"medium",title:"Incomplete",confidence:"high",evidence:[],explanation:"",suggested_actions:[],navigation:{page:"positions",actions:[{label:"Unclassified positions: 2",filters:{allocation_category:"Unclassified"}},{label:"Unresolved location positions: 1",filters:{exchange:"Unresolved"}}]}} as Insights["findings"][number];

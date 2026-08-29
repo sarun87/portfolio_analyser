@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+IMAGE_NAME="${PORTFOLIO_DOCKER_IMAGE:-portfolio-analyser:latest}"
+CONTAINER_NAME="${PORTFOLIO_DOCKER_CONTAINER:-portfolio-analyser}"
+BUILD_IMAGE=false
+INSECURE=false
+
+usage() {
+  cat <<EOF
+Usage: $0 [--build] [--insecure]
+  --build     Build the Docker image before starting the container.
+  --insecure  Publish HTTP to the local network. Requires PORTFOLIO_TRUSTED_ORIGINS.
+
+Environment:
+  PORTFOLIO_PORT             Host port (default: 8000)
+  PORTFOLIO_HOST             Host bind address (default: 127.0.0.1; 0.0.0.0 with --insecure)
+  PORTFOLIO_TRUSTED_ORIGINS  Comma-separated browser-facing origins; required with --insecure
+  PORTFOLIO_DOCKER_IMAGE     Image name (default: portfolio-analyser:latest)
+  PORTFOLIO_DOCKER_CONTAINER Container name (default: portfolio-analyser)
+EOF
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --build) BUILD_IMAGE=true ;;
+    --insecure) INSECURE=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+  shift
+done
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is required. Install Docker Desktop (macOS) or Docker Engine (Linux); do not run this script with sudo."
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is not available to the current user. Start Docker and grant this user Docker access; do not use sudo."
+  exit 1
+fi
+
+if [[ "$BUILD_IMAGE" == true ]]; then
+  docker build --tag "$IMAGE_NAME" .
+elif ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+  echo "Docker image $IMAGE_NAME is missing. Run: $0 --build"
+  exit 1
+fi
+
+APP_ENVIRONMENT="${PORTFOLIO_ENV:-development}"
+if [[ "$APP_ENVIRONMENT" == "production" ]]; then
+  HOST_PORT="${PORTFOLIO_PORT:-8443}"
+  HOST_BIND="${PORTFOLIO_HOST:-0.0.0.0}"
+else
+  HOST_PORT="${PORTFOLIO_PORT:-8000}"
+  HOST_BIND="${PORTFOLIO_HOST:-127.0.0.1}"
+fi
+if [[ "$INSECURE" == true ]]; then
+  if [[ "$APP_ENVIRONMENT" == "production" ]]; then
+    echo "--insecure cannot be used with PORTFOLIO_ENV=production. Use HTTPS instead."
+    exit 1
+  fi
+  if [[ -z "${PORTFOLIO_TRUSTED_ORIGINS:-}" ]]; then
+    echo "--insecure requires PORTFOLIO_TRUSTED_ORIGINS to name the browser-facing HTTP origin."
+    echo "Example: PORTFOLIO_TRUSTED_ORIGINS=http://192.168.1.25:$HOST_PORT $0 --insecure"
+    exit 1
+  fi
+  HOST_BIND="${PORTFOLIO_HOST:-0.0.0.0}"
+fi
+
+if [[ ! "$HOST_PORT" =~ ^[0-9]+$ ]] || (( HOST_PORT < 1 || HOST_PORT > 65535 )); then
+  echo "PORTFOLIO_PORT must be between 1 and 65535."
+  exit 1
+fi
+
+TRUSTED_ORIGINS="${PORTFOLIO_TRUSTED_ORIGINS:-http://127.0.0.1:$HOST_PORT,http://localhost:$HOST_PORT}"
+
+mkdir -p "$ROOT_DIR/data" "$ROOT_DIR/logs"
+
+docker_args=(
+  run --rm --name "$CONTAINER_NAME"
+  --user "$(id -u):$(id -g)"
+  --publish "$HOST_BIND:$HOST_PORT:8000"
+  --volume "$ROOT_DIR/data:/app/data"
+  --volume "$ROOT_DIR/logs:/app/logs"
+  --env "PORTFOLIO_ENV=$APP_ENVIRONMENT"
+  --env "PORTFOLIO_TRUSTED_ORIGINS=$TRUSTED_ORIGINS"
+)
+
+command=(uvicorn backend.app.main:app --host 0.0.0.0 --port 8000)
+if [[ "$INSECURE" == true ]]; then
+  docker_args+=(--env PORTFOLIO_SESSION_COOKIE_SECURE=false)
+  echo "WARNING: Starting insecure HTTP on http://$HOST_BIND:$HOST_PORT"
+  echo "This exposes portfolio data and session cookies to network interception."
+elif [[ "$APP_ENVIRONMENT" == "production" ]]; then
+  SSL_CERTFILE="${PORTFOLIO_SSL_CERTFILE:-}"
+  SSL_KEYFILE="${PORTFOLIO_SSL_KEYFILE:-}"
+  if [[ -z "$SSL_CERTFILE" || -z "$SSL_KEYFILE" || -z "${PORTFOLIO_TRUSTED_ORIGINS:-}" ]]; then
+    echo "Production HTTPS requires PORTFOLIO_SSL_CERTFILE, PORTFOLIO_SSL_KEYFILE, and PORTFOLIO_TRUSTED_ORIGINS."
+    exit 1
+  fi
+  if [[ ! -r "$SSL_CERTFILE" || ! -r "$SSL_KEYFILE" ]]; then
+    echo "Configured TLS certificate or key file is not readable."
+    exit 1
+  fi
+  docker_args+=(
+    --env PORTFOLIO_SESSION_COOKIE_SECURE=true
+    --volume "$SSL_CERTFILE:/certs/certificate.pem:ro"
+    --volume "$SSL_KEYFILE:/certs/private-key.pem:ro"
+  )
+  command+=(--ssl-certfile /certs/certificate.pem --ssl-keyfile /certs/private-key.pem)
+  echo "Starting Portfolio Analyser at https://$HOST_BIND:$HOST_PORT"
+else
+  echo "Starting Portfolio Analyser at http://$HOST_BIND:$HOST_PORT"
+fi
+
+exec docker "${docker_args[@]}" "$IMAGE_NAME" "${command[@]}"

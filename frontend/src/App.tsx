@@ -186,7 +186,7 @@ function storedPositionColumns(): PositionColumn[] {
 }
 
 function money(value?: number | null, currency = "USD") {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(
+  return new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(
     value || 0
   );
 }
