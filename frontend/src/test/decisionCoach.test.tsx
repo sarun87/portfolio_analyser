@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(), commitImport: vi.fn(), previewBroker: vi.fn(), createBroker: vi.fn(), updateBroker: vi.fn(), deleteBroker: vi.fn(),
+  updatePosition: vi.fn(), updatePositions: vi.fn(),
   lookThrough: vi.fn(), saveFundComposition: vi.fn(), previewPublicMetadata: vi.fn(), acceptPublicComposition: vi.fn(),
   riskAnalysis: vi.fn(), riskSettings: vi.fn(), refreshMarketHistory: vi.fn(), saveRiskSettings: vi.fn(),
   importMarketHistory: vi.fn(), importManualMarketSeries: vi.fn(), feeAnalysis: vi.fn(), securityFees: vi.fn(),
@@ -58,6 +59,8 @@ beforeEach(() => {
       location_status:"statement",acquisition_date:"2024-01-15",lot_number:"LOT-1",units:2,
       per_unit_cost_basis:75,total_cost_basis:150,per_unit_fmv:100,total_fmv:200,currency:"INR"}]
   });
+  apiMock.updatePosition.mockImplementation((_id, payload) => Promise.resolve({...fund, ...payload}));
+  apiMock.updatePositions.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -170,6 +173,30 @@ describe("decision coach workspaces", () => {
     render(<PositionsTable positions={[fund]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} currencyMode="position" onCurrencyModeChange={onCurrencyModeChange} />);
     fireEvent.click(screen.getByLabelText("Use position currency"));
     expect(onCurrencyModeChange).toHaveBeenCalledWith("display");
+  });
+
+  it("keeps edited per-unit and total cost and FMV values in sync", async () => {
+    const position = {...fund, units:10, per_unit_cost_basis:100, total_cost_basis:1_000, per_unit_fmv:200, total_fmv:2_000};
+    render(<PositionsTable positions={[position]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", {name:/edit mode/i}));
+    const perUnitCost = screen.getByLabelText("Per Unit Cost Basis for Index Fund");
+    const totalCost = screen.getByLabelText("Total Cost Basis for Index Fund");
+    const perUnitFmv = screen.getByLabelText("Per Unit FMV for Index Fund");
+    const totalFmv = screen.getByLabelText("Total FMV for Index Fund");
+    fireEvent.change(perUnitCost, {target:{value:"120"}});
+    expect(totalCost).toHaveValue(1_200);
+    fireEvent.change(totalCost, {target:{value:"1500"}});
+    expect(perUnitCost).toHaveValue(150);
+    fireEvent.change(perUnitFmv, {target:{value:"250"}});
+    expect(totalFmv).toHaveValue(2_500);
+    fireEvent.change(totalFmv, {target:{value:"3000"}});
+    expect(perUnitFmv).toHaveValue(300);
+    fireEvent.click(screen.getByTitle("Save position"));
+    await waitFor(() => expect(apiMock.updatePosition).toHaveBeenCalledWith(1, expect.objectContaining({per_unit_cost_basis:150, total_cost_basis:1_500, per_unit_fmv:300, total_fmv:3_000})));
+    const saveAll = screen.getByRole("button", {name:/save all/i});
+    await waitFor(() => expect(saveAll).toBeEnabled());
+    fireEvent.click(saveAll);
+    await waitFor(() => expect(apiMock.updatePositions).toHaveBeenCalledWith([expect.objectContaining({position_id:1, payload:expect.objectContaining({per_unit_cost_basis:150, total_cost_basis:1_500, per_unit_fmv:300, total_fmv:3_000})})]));
   });
 
   it("routes each data-quality action with its structured filter", () => {

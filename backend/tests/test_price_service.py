@@ -7,7 +7,8 @@ import pytest
 
 from backend.app.db.schema import init_db
 from backend.app.services.price_service import fetch_google_finance_price, fetch_yahoo_price, google_candidates, refresh_security, yahoo_candidates
-from backend.app.services.portfolio_service import list_positions
+from backend.app.services.portfolio_service import list_positions, update_position
+from backend.app.services.models import PositionUpdate
 from backend.app.services.insight_service import snapshot_comparison
 
 
@@ -105,6 +106,24 @@ def test_cspx_uses_google_london_quote_after_yahoo_failure(priced_security):
     assert google.call_args_list[0].args == ("CSPX:LON",)
     stored = conn.execute("SELECT price, provider FROM price_history").fetchone()
     assert (stored["price"], stored["provider"]) == (827.78, "google-finance-html")
+
+
+def test_manual_fmv_update_replaces_cached_market_quote(priced_security):
+    conn, security_id = priced_security
+    conn.execute("INSERT INTO price_history (security_id, price, price_date, provider) VALUES (?, 250, '2026-08-01', 'manual-test')", (security_id,))
+    original = list_positions(conn)[0]
+    assert original.total_fmv == 500
+
+    updated = update_position(conn, original.id, PositionUpdate(
+        security_name=original.security_name, symbol=original.symbol, security_type=original.security_type,
+        allocation_category=original.allocation_category, sector=original.sector, exchange=original.exchange,
+        investment_country=original.investment_country, snapshot_date=original.snapshot_date, units=original.units,
+        per_unit_cost_basis=original.per_unit_cost_basis, total_cost_basis=original.total_cost_basis,
+        per_unit_fmv=None, total_fmv=600, currency=original.currency,
+    ))
+
+    assert (updated.per_unit_fmv, updated.total_fmv) == (300, 600)
+    assert conn.execute("SELECT COUNT(*) FROM price_history").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("symbol", ["CSPX", "CNDX", "IWDA", "EIMI", "VDTA"])

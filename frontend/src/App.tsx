@@ -1088,6 +1088,27 @@ function payloadFromDraft(draft: PositionDraft): PositionUpdatePayload {
   };
 }
 
+function synchronizePositionDraft(draft: PositionDraft, patch: Partial<PositionDraft>): PositionDraft {
+  const next = { ...draft, ...patch };
+  const units = Number(next.units);
+  if (!Number.isFinite(units) || units === 0) return next;
+
+  const synchronize = (perUnitField: "per_unit_cost_basis" | "per_unit_fmv", totalField: "total_cost_basis" | "total_fmv") => {
+    if (perUnitField in patch) {
+      const perUnit = Number(next[perUnitField]);
+      if (Number.isFinite(perUnit)) next[totalField] = String(perUnit * units);
+    }
+    if (totalField in patch) {
+      const total = Number(next[totalField]);
+      if (Number.isFinite(total)) next[perUnitField] = String(total / units);
+    }
+  };
+
+  synchronize("per_unit_cost_basis", "total_cost_basis");
+  synchronize("per_unit_fmv", "total_fmv");
+  return next;
+}
+
 function optionsWithCurrent(options: string[], current: string) {
   return options.includes(current) ? options : [current, ...options].filter(Boolean);
 }
@@ -1258,7 +1279,7 @@ export function PositionsTable({
       ...current,
       ...Object.fromEntries(
         (selectedPositionIds.has(position.id) ? filtered.filter((item) => selectedPositionIds.has(item.id)) : [position])
-          .map((item) => [item.id, { ...(current[item.id] || draftFromPosition(item)), ...patch }])
+          .map((item) => [item.id, synchronizePositionDraft(current[item.id] || draftFromPosition(item), patch)])
       )
     }));
   }
@@ -1518,13 +1539,13 @@ export function PositionsTable({
                   </td>}
                   {columnVisible("cost_basis") && (editMode ? (
                     <>
-                      <td className="num"><input className={inputClass(position, "per_unit_cost_basis")} type="number" step="0.0001" value={draft.per_unit_cost_basis} onChange={(event) => updateDraft(position, { per_unit_cost_basis: event.target.value })} /></td>
-                      <td className="num"><input className={inputClass(position, "total_cost_basis")} type="number" step="0.01" value={draft.total_cost_basis} onChange={(event) => updateDraft(position, { total_cost_basis: event.target.value })} /></td>
+                      <td className="num"><input aria-label={`Per Unit Cost Basis for ${position.security_name}`} className={inputClass(position, "per_unit_cost_basis")} type="number" step="0.0001" value={draft.per_unit_cost_basis} onChange={(event) => updateDraft(position, { per_unit_cost_basis: event.target.value })} /></td>
+                      <td className="num"><input aria-label={`Total Cost Basis for ${position.security_name}`} className={inputClass(position, "total_cost_basis")} type="number" step="0.01" value={draft.total_cost_basis} onChange={(event) => updateDraft(position, { total_cost_basis: event.target.value })} /></td>
                     </>
                   ) : (
                     <td className="num">{money(currencyMode === "position" ? moneyMode === "total" ? position.total_cost_basis : position.per_unit_cost_basis : moneyMode === "total" ? position.total_cost_basis_display ?? position.total_cost_basis : position.per_unit_cost_basis_display ?? position.per_unit_cost_basis, currencyMode === "position" ? position.currency : position.display_currency)}</td>
                   ))}
-                  {columnVisible("fmv") && (editMode ? <><td className="num"><input className={inputClass(position, "per_unit_fmv")} type="number" step="0.0001" value={draft.per_unit_fmv} onChange={(event) => updateDraft(position, { per_unit_fmv: event.target.value })} /></td><td className="num"><input className={inputClass(position, "total_fmv")} type="number" step="0.01" value={draft.total_fmv} onChange={(event) => updateDraft(position, { total_fmv: event.target.value })} /></td></> : <td className="num">{money(currencyMode === "position" ? moneyMode === "total" ? position.total_fmv : position.per_unit_fmv : moneyMode === "total" ? position.total_fmv_display ?? position.total_fmv : position.per_unit_fmv_display ?? position.per_unit_fmv, currencyMode === "position" ? position.currency : position.display_currency)}</td>)}
+                  {columnVisible("fmv") && (editMode ? <><td className="num"><input aria-label={`Per Unit FMV for ${position.security_name}`} className={inputClass(position, "per_unit_fmv")} type="number" step="0.0001" value={draft.per_unit_fmv} onChange={(event) => updateDraft(position, { per_unit_fmv: event.target.value })} /></td><td className="num"><input aria-label={`Total FMV for ${position.security_name}`} className={inputClass(position, "total_fmv")} type="number" step="0.01" value={draft.total_fmv} onChange={(event) => updateDraft(position, { total_fmv: event.target.value })} /></td></> : <td className="num">{money(currencyMode === "position" ? moneyMode === "total" ? position.total_fmv : position.per_unit_fmv : moneyMode === "total" ? position.total_fmv_display ?? position.total_fmv : position.per_unit_fmv_display ?? position.per_unit_fmv, currencyMode === "position" ? position.currency : position.display_currency)}</td>)}
                   {columnVisible("currency") && <td>
                     {editMode ? (
                       <select className={inputClass(position, "currency")} value={draft.currency} onChange={(event) => updateDraft(position, { currency: event.target.value })}>

@@ -233,7 +233,7 @@ def create_position(conn: sqlite3.Connection, payload: PositionCreate) -> Positi
 def update_position(conn: sqlite3.Connection, position_id: int, payload: PositionUpdate) -> Position:
     existing = conn.execute(
         """
-        SELECT p.id, p.security_id, p.account_id, a.broker_id
+        SELECT p.id, p.security_id, p.account_id, p.per_unit_fmv, p.total_fmv, a.broker_id
         FROM positions p
         JOIN accounts a ON a.id = p.account_id
         WHERE p.id = ?
@@ -332,6 +332,11 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
             position_id,
         ),
     )
+    if per_unit_fmv != existing["per_unit_fmv"] or total_fmv != existing["total_fmv"]:
+        # A direct portfolio edit is an explicit manual valuation. Remove the
+        # cached market quote that would otherwise override it when positions
+        # are read back; the next price refresh can establish a new quote.
+        conn.execute("DELETE FROM price_history WHERE security_id=?", (existing["security_id"],))
     return get_position(conn, position_id)
 
 
