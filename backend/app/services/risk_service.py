@@ -15,7 +15,7 @@ from backend.app.services.models import (
     CorrelationRow, HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskHolding, RiskSettings,
 )
 from backend.app.services.portfolio_service import list_positions
-from backend.app.services.fx_service import get_display_currency
+from backend.app.services.fx_service import SUPPORTED_CURRENCIES, get_display_currency
 
 
 BENCHMARKS = {"USD": "^GSPC", "INR": "^NSEI", "GBP": "^FTSE", "EUR": "^STOXX50E"}
@@ -207,21 +207,45 @@ def _series(conn: sqlite3.Connection, key: str) -> tuple[str, dict[str, float]] 
         "SELECT observation_date, adjusted_close FROM market_series_points WHERE series_id=? ORDER BY observation_date", (row["id"],))}
 
 
-def _converted_prices(conn: sqlite3.Connection, key: str, display: str) -> dict[str, float]:
-    loaded = _series(conn, key)
+def _series_batch(conn: sqlite3.Connection, keys: set[str]) -> dict[str, tuple[str, dict[str, float]]]:
+    """Read all analysis series in one indexed query instead of per holding."""
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    result: dict[str, tuple[str, dict[str, float]]] = {}
+    rows = conn.execute(f"""SELECT s.series_key, s.currency, p.observation_date, p.adjusted_close
+                            FROM market_series s
+                            LEFT JOIN market_series_points p ON p.series_id=s.id
+                            WHERE s.series_key IN ({placeholders})
+                            ORDER BY s.series_key, p.observation_date""", tuple(keys))
+    for row in rows:
+        if row["series_key"] not in result:
+            result[row["series_key"]] = (row["currency"], {})
+        if row["observation_date"] is not None:
+            result[row["series_key"]][1][row["observation_date"]] = row["adjusted_close"]
+    return result
+
+
+def _converted_prices(conn: sqlite3.Connection, key: str, display: str,
+                      series_cache: dict[str, tuple[str, dict[str, float]]] | None = None) -> dict[str, float]:
+    loaded = series_cache.get(key) if series_cache is not None else _series(conn, key)
     if not loaded:
         return {}
     currency, prices = loaded
     if currency == display:
         return prices
-    source_fx = _series(conn, f"fx:USD:{currency}")[1] if currency != "USD" and _series(conn, f"fx:USD:{currency}") else None
-    target_fx = _series(conn, f"fx:USD:{display}")[1] if display != "USD" and _series(conn, f"fx:USD:{display}") else None
-    def rate_for_day(series: dict[str, float] | None, day: str) -> float | None:
+    def cached_series(series_key: str) -> dict[str, float] | None:
+        item = series_cache.get(series_key) if series_cache is not None else _series(conn, series_key)
+        return item[1] if item else None
+    source_fx = cached_series(f"fx:USD:{currency}") if currency != "USD" else None
+    target_fx = cached_series(f"fx:USD:{display}") if display != "USD" else None
+    source_days = sorted(source_fx) if source_fx else []
+    target_days = sorted(target_fx) if target_fx else []
+    def rate_for_day(series: dict[str, float] | None, days: list[str], day: str) -> float | None:
         if not series:
             return None
         if day in series:
             return series[day]
-        days = sorted(series)
         index = bisect_right(days, day) - 1
         if index < 0:
             return None
@@ -231,8 +255,8 @@ def _converted_prices(conn: sqlite3.Connection, key: str, display: str) -> dict[
         return series[prior]
     converted = {}
     for day, price in prices.items():
-        source_per_usd = 1.0 if currency == "USD" else rate_for_day(source_fx, day)
-        target_per_usd = 1.0 if display == "USD" else rate_for_day(target_fx, day)
+        source_per_usd = 1.0 if currency == "USD" else rate_for_day(source_fx, source_days, day)
+        target_per_usd = 1.0 if display == "USD" else rate_for_day(target_fx, target_days, day)
         if source_per_usd and target_per_usd:
             converted[day] = price / source_per_usd * target_per_usd
     return converted
@@ -296,10 +320,13 @@ def risk_analysis(conn: sqlite3.Connection) -> RiskAnalysis:
         item = grouped.setdefault(position.security_id, {"name": position.security_name, "symbol": position.symbol, "value": 0.0})
         item["value"] += position.total_fmv_display or 0
     benchmark_key = f"benchmark:{settings.benchmark_symbol}"
-    raw_benchmark = _series(conn, benchmark_key)
+    series_keys = {benchmark_key, *(f"security:{security_id}" for security_id in grouped),
+                   *(f"fx:USD:{currency}" for currency in SUPPORTED_CURRENCIES if currency != "USD")}
+    series_cache = _series_batch(conn, series_keys)
+    raw_benchmark = series_cache.get(benchmark_key)
     trading_calendar = set(raw_benchmark[1]) if raw_benchmark else None
-    benchmark_returns = _returns(_converted_prices(conn, benchmark_key, display), trading_calendar)
-    returns = {security_id: _returns(_converted_prices(conn, f"security:{security_id}", display), trading_calendar) for security_id in grouped}
+    benchmark_returns = _returns(_converted_prices(conn, benchmark_key, display, series_cache), trading_calendar)
+    returns = {security_id: _returns(_converted_prices(conn, f"security:{security_id}", display, series_cache), trading_calendar) for security_id in grouped}
     covered_ids = [security_id for security_id, values in returns.items() if len(values) >= settings.minimum_observations]
     covered_value = cash_value + sum(max(0, grouped[security_id]["value"]) for security_id in covered_ids)
     coverage = covered_value / total_portfolio * 100 if total_portfolio else 100.0
@@ -335,10 +362,8 @@ def risk_analysis(conn: sqlite3.Connection) -> RiskAnalysis:
             component = component_variance / variance * 100 if variance else None
         contributions[security_id] = component
         confidence = "high" if observation_count >= 1000 else "medium" if observation_count >= 252 else "low"
-        series_meta = conn.execute("""SELECT MAX(p.observation_date) AS latest FROM market_series s
-                                      LEFT JOIN market_series_points p ON p.series_id=s.id WHERE s.series_key=?""",
-                                   (f"security:{security_id}",)).fetchone()
-        latest = series_meta["latest"] if series_meta else None
+        stored_series = series_cache.get(f"security:{security_id}")
+        latest = max(stored_series[1], default=None) if stored_series else None
         stale = not latest or (date.today() - date.fromisoformat(latest)).days > 14
         warning_parts = []
         if observation_count < settings.minimum_observations:
@@ -367,10 +392,8 @@ def risk_analysis(conn: sqlite3.Connection) -> RiskAnalysis:
         warnings.append(f"Risk history covers {coverage:.1f}% of portfolio value, including cash as zero-volatility coverage; metrics are for the covered portfolio only.")
     if not benchmark_returns:
         warnings.append("Benchmark history is unavailable, so beta cannot be estimated.")
-    latest_benchmark = conn.execute("""SELECT MAX(p.observation_date) AS latest FROM market_series s
-                                       LEFT JOIN market_series_points p ON p.series_id=s.id WHERE s.series_key=?""",
-                                    (f"benchmark:{settings.benchmark_symbol}",)).fetchone()
-    if latest_benchmark and latest_benchmark["latest"] and (date.today() - date.fromisoformat(latest_benchmark["latest"])).days > 14:
+    latest_benchmark = max(raw_benchmark[1], default=None) if raw_benchmark else None
+    if latest_benchmark and (date.today() - date.fromisoformat(latest_benchmark)).days > 14:
         warnings.append("Benchmark history is more than 14 days old.")
     return RiskAnalysis(display_currency=display, benchmark_symbol=settings.benchmark_symbol or BENCHMARKS[display],
                         coverage_percent=coverage,

@@ -344,6 +344,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             migration(conn)
             conn.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
     ensure_fx_rates(conn)
+    # This is a write-time default, not something Insights should create on a
+    # read request (which would force an encrypted snapshot persistence).
+    conn.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('decision_coach_base_currency', 'USD')")
     conn.commit()
 
 
@@ -400,7 +403,19 @@ def _projection_planning(conn: sqlite3.Connection) -> None:
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning))
+def _performance_indexes(conn: sqlite3.Connection) -> None:
+    """Additive indexes for current-position and historical-series reads."""
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_positions_account_snapshot_date
+            ON positions(account_id, snapshot_date DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_points_series_date
+            ON market_series_points(series_id, observation_date);
+        CREATE INDEX IF NOT EXISTS idx_price_history_security_latest
+            ON price_history(security_id, price_date DESC, id DESC);
+    """)
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

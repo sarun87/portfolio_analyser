@@ -73,6 +73,7 @@ export const api = {
   lock: async () => {
     return request<AuthStatus>("/api/auth/lock", { method: "POST" });
   },
+  logout: async () => request<AuthStatus>("/api/auth/logout", { method: "POST" }),
   changePassphrase: (newPassphrase: string) =>
     request<AuthStatus>("/api/auth/change-passphrase", {
       method: "POST",
@@ -119,6 +120,7 @@ export const api = {
   profitLoss: () => request<Position[]>("/api/profit-loss"),
   dashboard: () => request<DashboardAnalytics>("/api/analytics/dashboard"),
   insights: () => request<Insights>("/api/insights"),
+  projectionInsights: () => request<Insights>("/api/insights/projection"),
   reviewInbox: () => request<InsightFinding[]>("/api/review-inbox"),
   snapshotComparison: () => request<SnapshotComparison>("/api/snapshot-comparison"),
   scenarios: () => request<SavedScenario[]>("/api/scenarios"),

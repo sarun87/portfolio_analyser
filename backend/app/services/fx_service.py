@@ -100,6 +100,12 @@ def get_fx_rate(conn: sqlite3.Connection, from_currency: Optional[str], to_curre
     return derived
 
 
+def fx_rate_lookup(conn: sqlite3.Connection) -> dict[tuple[str, str], float]:
+    """Load stored rates once for calculations that convert many values."""
+    return {(row["from_currency"], row["to_currency"]): float(row["rate"])
+            for row in conn.execute("SELECT from_currency, to_currency, rate FROM fx_rates")}
+
+
 def ensure_default_fx_rates(conn: sqlite3.Connection) -> None:
     for source in SUPPORTED_CURRENCIES:
         for target in SUPPORTED_CURRENCIES:
@@ -113,10 +119,17 @@ def ensure_default_fx_rates(conn: sqlite3.Connection) -> None:
             set_fx_rate(conn, FxRateUpdate(from_currency=source, to_currency=target, rate=rate), "default-derived")
 
 
-def convert_amount(conn: sqlite3.Connection, amount: Optional[float], from_currency: Optional[str], to_currency: str) -> Optional[float]:
+def convert_amount(conn: sqlite3.Connection, amount: Optional[float], from_currency: Optional[str], to_currency: str,
+                   rates: Optional[dict[tuple[str, str], float]] = None) -> Optional[float]:
     if amount is None:
         return None
-    return amount * get_fx_rate(conn, from_currency, to_currency)
+    source = (from_currency or "USD").upper()
+    target = to_currency.upper()
+    if source == target:
+        return amount
+    if rates is not None and (source, target) in rates:
+        return amount * rates[(source, target)]
+    return amount * get_fx_rate(conn, source, target)
 
 
 def fetch_latest_rates(base: str) -> dict[str, float]:

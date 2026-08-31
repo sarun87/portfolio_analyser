@@ -24,6 +24,8 @@ Local-first portfolio statement analyser for configurable CSV broker exports.
 
 Public fund metadata and historical market data are optional and token-free. Public fund holdings and expense ratios are saved only after review; manual metadata and manual price histories are authoritative and are not overwritten by refreshes. Coverage, freshness, and missing-data limitations are shown with the resulting analytics.
 
+The encrypted in-memory database is a single-process design. Run one Uvicorn worker; multiple workers would have separate in-memory copies of the portfolio. Multiple browser sessions are supported by the one process while the portfolio remains unlocked. Use the global lock action to revoke every session.
+
 ## Run locally
 
 ```bash

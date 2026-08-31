@@ -198,6 +198,8 @@ def test_new_tables_are_added_to_an_existing_database(sqlite_conn):
     init_db(sqlite_conn)
     tables = {row["name"] for row in sqlite_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"fund_compositions", "market_series", "security_fee_metadata", "portfolio_fees"} <= tables
+    indexes = {row["name"] for row in sqlite_conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"idx_positions_account_snapshot_date", "idx_market_points_series_date", "idx_price_history_security_latest"} <= indexes
 
 
 def test_rounding_above_100_is_normalized_without_overstating_exposure(advanced_portfolio):

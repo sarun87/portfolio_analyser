@@ -515,6 +515,7 @@ export function App() {
   const [realEstate, setRealEstate] = useState<RealEstateAsset[]>([]);
   const [privateEquity, setPrivateEquity] = useState<PrivateEquityAsset[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
+  const [reviewFindings, setReviewFindings] = useState<InsightFinding[] | null>(null);
   const [goals, setGoals] = useState<GoalsSummary | null>(null);
   const [assumptions, setAssumptions] = useState<FinancialAssumptions | null>(null);
   const [allocationTargets, setAllocationTargets] = useState<AllocationTarget[]>([]);
@@ -589,6 +590,14 @@ export function App() {
     setScheduledExpenses(expenseRows);
   }
 
+  async function loadCoreData() {
+    const [brokerRows, positionRows, plRows, dashboard, currencySetting] = await Promise.all([
+      api.brokers(), api.positions(), api.profitLoss(), api.dashboard(), api.currency()
+    ]);
+    setBrokers(brokerRows); setPositions(positionRows); setProfitLoss(plRows);
+    setAnalytics(dashboard); setCurrency(currencySetting);
+  }
+
   useEffect(() => {
     loadAuth().catch((error) => setMessage(error.message));
   }, []);
@@ -600,15 +609,60 @@ export function App() {
 
   useEffect(() => {
     if (auth?.unlocked) {
-      loadData().catch((error) => setMessage(error.message));
+      loadCoreData().catch((error) => setMessage(error.message));
     }
   }, [auth?.unlocked]);
 
   useEffect(() => {
     if (auth?.unlocked && view === "analytics" && ["insights", "what-changed", "allocation-policy"].includes(analyticsSection)) {
-      api.insights().then(setInsights).catch((error) => setMessage(error.message));
+      api.insights().then((nextInsights) => {
+        setInsights(nextInsights);
+        if (analyticsSection === "insights") {
+          setReviewFindings(null);
+          api.reviewInbox().then(setReviewFindings).catch((error) => setMessage(error.message));
+        }
+      }).catch((error) => setMessage(error.message));
     }
   }, [auth?.unlocked, view, analyticsSection, positions]);
+
+  useEffect(() => {
+    if (auth?.unlocked && view === "analytics" && analyticsSection === "scenario-lab") {
+      Promise.all([api.scenarios(), api.goals()]).then(([nextScenarios, goalRows]) => { setScenarios(nextScenarios); setGoals(goalRows); }).catch((error) => setMessage(error.message));
+    }
+  }, [auth?.unlocked, view, analyticsSection]);
+
+  useEffect(() => {
+    if (auth?.unlocked && view === "analytics" && analyticsSection === "allocation-policy") {
+      Promise.all([api.allocationTargets(), api.allocationCategories()])
+        .then(([targets, categories]) => { setAllocationTargets(targets); setAllocationCategoryOptions(categories); })
+        .catch((error) => setMessage(error.message));
+    }
+  }, [auth?.unlocked, view, analyticsSection]);
+
+  useEffect(() => {
+    if (!auth?.unlocked || view !== "assets") return;
+    if (assetSection === "banking") api.staticAccounts().then(setStaticAccounts).catch((error) => setMessage(error.message));
+    if (assetSection === "real-estate") api.realEstate().then(setRealEstate).catch((error) => setMessage(error.message));
+    if (assetSection === "private-equity") api.privateEquity().then(setPrivateEquity).catch((error) => setMessage(error.message));
+  }, [auth?.unlocked, view, assetSection]);
+
+  useEffect(() => {
+    if (!auth?.unlocked || view !== "planning") return;
+    if (planningSection === "goals") api.goals().then(setGoals).catch((error) => setMessage(error.message));
+    if (planningSection === "expenses-projections") {
+      Promise.all([api.assumptions(), api.scheduledExpenses(), api.projectionInsights()])
+        .then(([nextAssumptions, expenses, nextInsights]) => { setAssumptions(nextAssumptions); setScheduledExpenses(expenses); setInsights(nextInsights); })
+        .catch((error) => setMessage(error.message));
+    }
+  }, [auth?.unlocked, view, planningSection]);
+
+  useEffect(() => {
+    if (auth?.unlocked && view === "settings") {
+      Promise.all([api.fxRates(), api.allocationTargets(), api.allocationCategories()])
+        .then(([rates, targets, categories]) => { setFxRates(rates); setAllocationTargets(targets); setAllocationCategoryOptions(categories); })
+        .catch((error) => setMessage(error.message));
+    }
+  }, [auth?.unlocked, view]);
 
   async function refreshAllPrices() {
     setBusy(true);
@@ -769,7 +823,7 @@ export function App() {
           />
         )}
         {view === "analytics" && <WorkspaceTabs tabs={[{id:"insights",label:"Insights"},{id:"what-changed",label:"What Changed"},{id:"allocation-policy",label:"Allocation Policy"},{id:"exposure",label:"Exposure"},{id:"value-metrics",label:"Value metrics"},{id:"risk",label:"Risk"},{id:"scenario-lab",label:"Scenario Lab"}]} active={analyticsSection} onChange={id => setAnalyticsSection(id as typeof analyticsSection)} />}
-        {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} onNavigate={navigation => { if (navigation.page === "positions") { setPositionFilter(""); setPositionStructuredFilter(navigation.filters || {}); setView("portfolio"); setPortfolioSection("positions"); } else if (navigation.page === "analytics" && navigation.section === "allocation_policy") { setAnalyticsSection("allocation-policy"); } else if (navigation.page === "settings") { setPlanningSection("expenses-projections"); setView("planning"); } }} />}
+        {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} findings={reviewFindings || insights.findings} onNavigate={navigation => { if (navigation.page === "positions") { setPositionFilter(""); setPositionStructuredFilter(navigation.filters || {}); setView("portfolio"); setPortfolioSection("positions"); } else if (navigation.page === "analytics" && navigation.section === "allocation_policy") { setAnalyticsSection("allocation-policy"); } else if (navigation.page === "settings") { setPlanningSection("expenses-projections"); setView("planning"); } }} />}
         {view === "analytics" && analyticsSection === "what-changed" && insights && <WhatChangedPage insights={insights} />}
         {view === "analytics" && analyticsSection === "allocation-policy" && insights && <AllocationPolicyPage insights={insights} targets={allocationTargets} categories={allocationCategoryOptions} onChanged={loadData} />}
         {view === "analytics" && analyticsSection === "exposure" && <ExposurePage positions={positions} insights={insights} />}
@@ -2480,9 +2534,9 @@ function PrivateEquityPage({assets,currency,onChanged}:{assets:PrivateEquityAsse
   return <section className="stack"><section className="panel"><p className="eyebrow">No automated pricing or market-risk refresh</p><h2>{editing?"Update private equity":"Add private equity"}</h2><form className="assetForm" onSubmit={save}><label><span>Company</span><input required value={form.company_name} onChange={e=>setForm({...form,company_name:e.target.value})}/></label><label>Stage<select value={form.stage} onChange={e=>setForm({...form,stage:e.target.value})}>{["Pre-seed","Seed","Series A","Series B","Series C+","Growth","Secondary","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Share class<select value={form.share_class} onChange={e=>setForm({...form,share_class:e.target.value as "Common"|"Preferred"})}><option>Common</option><option>Preferred</option></select></label><label>Quantity<input required type="number" min="0" step="any" value={form.quantity} onChange={e=>setForm({...form,quantity:Number(e.target.value)})}/></label><label>Purchase price / unit<input required type="number" min="0" step="any" value={form.purchase_price_per_unit} onChange={e=>setForm({...form,purchase_price_per_unit:Number(e.target.value)})}/></label><label>Investment date<input type="date" value={form.investment_date||""} onChange={e=>setForm({...form,investment_date:e.target.value})}/></label><label>Last valuation / unit<input required type="number" min="0" step="any" value={form.last_valuation_per_unit} onChange={e=>setForm({...form,last_valuation_per_unit:Number(e.target.value)})}/></label><label>Valuation date<input type="date" value={form.valuation_date||""} onChange={e=>setForm({...form,valuation_date:e.target.value})}/></label><label>Ownership %<input type="number" min="0" max="100" step="any" value={form.ownership_percent??""} onChange={e=>setForm({...form,ownership_percent:e.target.value===""?null:Number(e.target.value)})}/></label><label>Valuation source<input value={form.valuation_source||""} onChange={e=>setForm({...form,valuation_source:e.target.value})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{(currency?.supported_currencies||supportedCurrencies).map(x=><option key={x}>{x}</option>)}</select></label><label className="wideField">Notes<textarea value={form.notes||""} onChange={e=>setForm({...form,notes:e.target.value})}/></label><div className="buttonRow left wideField"><button><Save size={16}/>{editing?"Update valuation":"Add"}</button>{editing&&<button type="button" className="secondary" onClick={()=>{setEditing(null);setForm(blank)}}>Cancel</button>}</div></form>{error&&<div className="error">{error}</div>}</section><section className="panel"><div className="panelHeader"><h2>Restricted, non-marketable holdings</h2><strong>{money(total,display)}</strong></div><div className="tableWrap"><table><thead><tr><th>Company</th><th>Stage</th><th>Class</th><th>Current value</th><th>Gain / loss</th><th>Valuation date</th><th>Source</th><th></th></tr></thead><tbody>{assets.map(a=><tr key={a.id}><td>{a.company_name}</td><td>{a.stage}</td><td>{a.share_class}</td><td>{money(a.current_value,a.currency)}</td><td>{money(a.unrealized_gain_loss,a.currency)}</td><td>{a.valuation_date||"-"}</td><td>{a.valuation_source||"-"}</td><td><button className="iconOnly" onClick={()=>edit(a)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deletePrivateEquity(a.id);await onChanged("Private equity investment deleted.")}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 
-export function InsightsPage({ insights, onNavigate = () => {} }: { insights: Insights; onNavigate?: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
+export function InsightsPage({ insights, findings, onNavigate = () => {} }: { insights: Insights; findings?: InsightFinding[]; onNavigate?: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
   const c = insights.display_currency;
-  return <section className="stack"><ReviewInbox findings={insights.findings} currency={c} onNavigate={onNavigate} /></section>;
+  return <section className="stack"><ReviewInbox findings={findings || insights.findings} currency={c} onNavigate={onNavigate} /></section>;
 }
 
 export function WhatChangedPage({ insights }: { insights: Insights }) { return <SnapshotChanges comparison={insights.snapshot_comparison} currency={insights.display_currency} />; }
