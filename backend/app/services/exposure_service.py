@@ -540,34 +540,9 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
             for key, data in exposure[dimension].items()
         ], key=lambda item: item.value, reverse=True)
 
-    flattened: dict[int, dict[str, float]] = {}
-    def flatten(fund_id: int, factor: float = 1.0, path: tuple[int, ...] = ()) -> dict[str, float]:
-        result: dict[str, float] = defaultdict(float)
-        composition = compositions.get(fund_id)
-        if not composition or fund_id in path or len(path) >= 10:
-            return result
-        for item in composition.constituents:
-            weight = factor * item.weight_percent
-            if item.linked_security_id in compositions:
-                nested = flatten(item.linked_security_id, weight / 100, path + (fund_id,))
-                if nested:
-                    for key, value in nested.items():
-                        result[key] += value
-                    continue
-            # ISIN/SEDOL/CUSIP is preferred over a ticker: tickers can be reused across markets.
-            result[(item.identifier or item.symbol or item.constituent_key).upper()] += weight
-        return result
-    for fund_id in compositions:
-        flattened[fund_id] = flatten(fund_id)
-    overlaps = []
-    fund_ids = sorted(held_fund_ids & set(flattened))
-    for index, left in enumerate(fund_ids):
-        for right in fund_ids[index + 1:]:
-            overlap = sum(min(flattened[left][key], flattened[right].get(key, 0)) for key in flattened[left])
-            if overlap > 0:
-                overlaps.append(FundOverlap(left_security_id=left, left_name=grouped.get(left, {}).get("name", compositions[left].security_name),
-                                            right_security_id=right, right_name=grouped.get(right, {}).get("name", compositions[right].security_name), overlap_percent=overlap))
-    warnings = []
+    # Only held funds and compositions reachable from them can affect this
+    # portfolio.  Compute that set before flattening, rather than expanding
+    # every composition ever saved in the database.
     relevant_ids = set(held_fund_ids)
     pending = list(held_fund_ids)
     while pending:
@@ -580,6 +555,42 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
             if child in compositions and child not in relevant_ids:
                 relevant_ids.add(child)
                 pending.append(child)
+
+    flattened: dict[int, dict[str, float]] = {}
+    flatten_cache: dict[tuple[int, int], dict[str, float]] = {}
+    in_progress: set[int] = set()
+    def flatten(fund_id: int, remaining_depth: int = 10) -> dict[str, float]:
+        cached = flatten_cache.get((fund_id, remaining_depth))
+        if cached is not None:
+            return cached
+        result: dict[str, float] = defaultdict(float)
+        composition = compositions.get(fund_id)
+        if not composition or fund_id in in_progress or remaining_depth <= 0:
+            return result
+        in_progress.add(fund_id)
+        for item in composition.constituents:
+            if item.linked_security_id in compositions:
+                nested = flatten(item.linked_security_id, remaining_depth - 1)
+                if nested:
+                    for key, value in nested.items():
+                        result[key] += item.weight_percent * value / 100
+                    continue
+            # ISIN/SEDOL/CUSIP is preferred over a ticker: tickers can be reused across markets.
+            result[(item.identifier or item.symbol or item.constituent_key).upper()] += item.weight_percent
+        in_progress.remove(fund_id)
+        flatten_cache[(fund_id, remaining_depth)] = result
+        return result
+    for fund_id in relevant_ids:
+        flattened[fund_id] = flatten(fund_id)
+    overlaps = []
+    fund_ids = sorted(held_fund_ids & set(flattened))
+    for index, left in enumerate(fund_ids):
+        for right in fund_ids[index + 1:]:
+            overlap = sum(min(flattened[left][key], flattened[right].get(key, 0)) for key in flattened[left])
+            if overlap > 0:
+                overlaps.append(FundOverlap(left_security_id=left, left_name=grouped.get(left, {}).get("name", compositions[left].security_name),
+                                            right_security_id=right, right_name=grouped.get(right, {}).get("name", compositions[right].security_name), overlap_percent=overlap))
+    warnings = []
     stale = [item.security_name for key, item in compositions.items() if key in relevant_ids and item.stale]
     if stale:
         warnings.append(f"Stale composition metadata: {', '.join(stale)}.")

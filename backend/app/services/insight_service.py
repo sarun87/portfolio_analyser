@@ -13,7 +13,7 @@ from backend.app.services.models import (
     SnapshotAllocationShift, SnapshotComparison, SnapshotHoldingChange, TimeSeriesPoint, ScheduledExpense, ScheduledExpenseInput,
 )
 from backend.app.services.portfolio_service import list_positions
-from backend.app.services.repositories import get_setting, set_setting
+from backend.app.services.repositories import get_setting
 
 
 ASSUMPTION_FIELDS = [
@@ -203,7 +203,7 @@ def delete_goal(conn: sqlite3.Connection, goal_id: int) -> None:
         raise ValueError("Goal not found.")
 
 
-def insights(conn: sqlite3.Connection) -> Insights:
+def insights(conn: sqlite3.Connection, *, include_forecast: bool = True) -> Insights:
     display, positions, a = get_display_currency(conn), list_positions(conn), get_assumptions(conn)
     values = [(p, p.total_fmv_display or 0) for p in positions]
     total = sum(v for _, v in values)
@@ -267,7 +267,9 @@ def insights(conn: sqlite3.Connection) -> Insights:
     drawdown = _drawdown(history)
     rolling = {str(m): _growth(history, m) for m in (1, 3, 12)}
     financial_assets = total + sum(convert_amount(conn, r["amount"], r["currency"], display) or 0 for r in static if r["category"] in ("Bank Account", "Retirement Account"))
-    forecast = _forecast(financial_assets, a, list_scheduled_expenses(conn), conn, display) if _lifetime_projection_ready(a) else None
+    # Monte Carlo is intentionally opt-in: the basic Insights page should not
+    # make every analytics visit simulate thousands of lifetime paths.
+    forecast = _forecast(financial_assets, a, list_scheduled_expenses(conn), conn, display) if include_forecast and _lifetime_projection_ready(a) else None
     runway = immediate/a.monthly_expenses if a.monthly_expenses else None
     comparison = snapshot_comparison(conn)
     policy_rows = [row for rows in drifts.values() for row in rows]
@@ -331,7 +333,6 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
     base_currency = get_setting(conn, "decision_coach_base_currency")
     if not base_currency:
         base_currency = display
-        set_setting(conn, "decision_coach_base_currency", base_currency)
     currency_values = {}
     for position in positions:
         currency_values[position.currency] = currency_values.get(position.currency, 0) + (position.total_fmv_display or 0)

@@ -1,4 +1,4 @@
-from backend.app.services.csv_importer import derive_per_unit_and_total, preview_with_mapping
+from backend.app.services.csv_importer import derive_per_unit_and_total, preview_with_mapping, sanitize_acquisition_date
 from backend.app.services.models import ImportCommitRequest, ImportReconciliationRow, ImportResult, ImportPreview
 from backend.app.services.repositories import fingerprint_account, get_or_create_account, get_broker, get_or_create_security, import_exists, insert_import
 
@@ -6,7 +6,7 @@ from backend.app.services.repositories import fingerprint_account, get_or_create
 FIELDS = ["security_name", "symbol", "security_type", "allocation_category", "sector", "exchange", "investment_country", "acquisition_date", "lot_number", "units", "per_unit_cost_basis", "total_cost_basis", "per_unit_fmv", "total_fmv", "currency"]
 
 def _key(account_id, symbol, lot, acquisition_date):
-    return (account_id, (symbol or "").strip().upper(), (lot or "").strip(), (acquisition_date or "").strip())
+    return (account_id, (symbol or "").strip().upper(), (lot or "").strip(), sanitize_acquisition_date(acquisition_date) or "")
 def _row_values(row): return {field: getattr(row, field) for field in FIELDS}
 
 def _current_rows(conn, broker_id, account_ids):
@@ -36,7 +36,7 @@ def _reconcile(conn, preview: ImportPreview):
         proposed = _row_values(row); old = {field: existing[field] for field in FIELDS}
         changed = [field for field in FIELDS if old[field] != proposed[field]]
         if changed: modified.append(ImportReconciliationRow(row_number=row.row_number, current_values=old, proposed_values=proposed, changed_fields=changed))
-    ignored = {(item.raw_values.get("account_number") or "UNKNOWN", (item.raw_values.get("symbol") or "").strip().upper(), (item.raw_values.get("lot_number") or "").strip(), (item.raw_values.get("acquisition_date") or "").strip()) for item in preview.ignored_rows}
+    ignored = {(item.raw_values.get("account_number") or "UNKNOWN", (item.raw_values.get("symbol") or "").strip().upper(), (item.raw_values.get("lot_number") or "").strip(), sanitize_acquisition_date(item.raw_values.get("acquisition_date")) or "") for item in preview.ignored_rows}
     deleted = []
     for key, existing in current.items():
         account_name = next((name for name, ident in accounts.items() if ident == key[0]), "UNKNOWN")
@@ -85,7 +85,7 @@ def commit_statement(conn, request: ImportCommitRequest) -> ImportResult:
         else:
             conn.execute("INSERT INTO positions (import_id,account_id,security_id,snapshot_date,acquisition_date,lot_number,units,per_unit_cost_basis,total_cost_basis,per_unit_fmv,total_fmv,currency) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (import_id, account_id, security_id, preview.statement_date, row.acquisition_date, row.lot_number, row.units, pcb, tcb, pfmv, tfmv, row.currency))
     deleted = 0
-    ignored = {(item.raw_values.get("account_number") or "UNKNOWN", (item.raw_values.get("symbol") or "").strip().upper(), (item.raw_values.get("lot_number") or "").strip(), (item.raw_values.get("acquisition_date") or "").strip()) for item in preview.ignored_rows}
+    ignored = {(item.raw_values.get("account_number") or "UNKNOWN", (item.raw_values.get("symbol") or "").strip().upper(), (item.raw_values.get("lot_number") or "").strip(), sanitize_acquisition_date(item.raw_values.get("acquisition_date")) or "") for item in preview.ignored_rows}
     for key, existing in current.items():
         account_name = next((name for name, ident in accounts.items() if ident == key[0]), "UNKNOWN")
         if key not in changed_keys and (account_name, key[1], key[2], key[3]) not in ignored:

@@ -30,6 +30,10 @@ def normalize_header(value: str) -> str: return re.sub(r"[^a-z0-9]+", " ", value
 def clean_text(value: Any) -> Optional[str]:
     text = str(value or "").strip()
     return text or None
+def sanitize_acquisition_date(value: Any) -> Optional[str]:
+    """Remove broker-supplied postfix data (for example, ``;043233``)."""
+    text = clean_text(value)
+    return clean_text(text.split(";", 1)[0]) if text else None
 def parse_number(value: Any) -> Optional[float]:
     text = clean_text(value)
     if not text or text in {"-", "--", "N/A", "n/a"}: return None
@@ -68,7 +72,9 @@ def derive_per_unit_and_total(units: float, per_unit_value: Optional[float], tot
 def normalize_row(raw: dict[str, str], mapping: dict[str, str], row_number: int, statement_currency: str, override: Optional[dict[str, Optional[str]]] = None):
     override = override or {}
     def source_value(field: str): return clean_text(raw.get(mapping[field])) if mapping.get(field) else None
-    def value(field: str): return clean_text(override[field]) if field in override else source_value(field)
+    def value(field: str):
+        result = clean_text(override[field]) if field in override else source_value(field)
+        return sanitize_acquisition_date(result) if field == "acquisition_date" else result
     raw_values = {field: source_value(field) for field in CANONICAL_FIELDS}
     errors: dict[str, list[str]] = {}
     def fail(field: str, message: str): errors.setdefault(field, []).append(message)
@@ -106,6 +112,8 @@ def apply_locked_fields(conn, broker_id: int, rows: list[PreviewRow], locked_fie
         previous = conn.execute("""SELECT p.*, s.name security_name, s.symbol, s.security_type, s.allocation_category, s.sector, s.exchange, s.investment_country, s.location_source previous_location_status FROM positions p JOIN accounts a ON a.id=p.account_id JOIN securities s ON s.id=p.security_id WHERE a.broker_id=? AND a.account_fingerprint=? AND COALESCE(s.symbol,'')=COALESCE(?, '') AND COALESCE(p.lot_number,'')=COALESCE(?, '') ORDER BY CASE WHEN s.exchange=? THEN 0 ELSE 1 END, p.snapshot_date DESC, p.id DESC LIMIT 1""", (broker_id, fingerprint_account(row.account_number), row.symbol.upper().strip() if row.symbol else None, row.lot_number, row.exchange)).fetchone()
         if not previous: result.append(row); continue
         updates = {field: previous[field] for field in protected}
+        if "acquisition_date" in updates:
+            updates["acquisition_date"] = sanitize_acquisition_date(updates["acquisition_date"])
         if protected & {"exchange", "investment_country"}: updates["location_status"] = previous["previous_location_status"] or "locked-prior-snapshot"
         result.append(row.model_copy(update=updates))
     return result

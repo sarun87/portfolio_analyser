@@ -11,6 +11,7 @@ from backend.app.api import routes
 from backend.app.api.routes import CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, clear_session_cookies, require_unlocked, set_session_cookies
 from backend.app.core.encryption import EncryptionError, generate_salt, key_manager
 from backend.app.db.database import EncryptedDatabase
+from backend.app.db.schema import init_db
 from backend.app.main import app
 
 
@@ -74,23 +75,41 @@ def test_database_file_is_encrypted_and_restores_relational_data(tmp_path):
         key_manager.lock()
 
 
-def test_unlock_session_token_is_random_and_required():
+def test_unlock_creates_independent_expiring_sessions_until_global_lock(monkeypatch):
     salt = generate_salt()
     verifier = key_manager.setup("correct horse battery staple", salt)
     first_token = key_manager.session_token
+    first_csrf = key_manager.csrf_token
 
     try:
         assert first_token
         assert key_manager.authenticate(first_token)
+        assert key_manager.authenticate_csrf(first_token, first_csrf)
         assert not key_manager.authenticate(None)
         assert not key_manager.authenticate("incorrect-token")
 
-        key_manager.lock()
-        assert not key_manager.authenticate(first_token)
         key_manager.unlock("correct horse battery staple", salt, verifier)
-        assert key_manager.session_token
-        assert key_manager.session_token != first_token
+        second_token = key_manager.session_token
+        assert second_token and second_token != first_token
+        assert key_manager.authenticate(first_token)
+        assert key_manager.authenticate(second_token)
+        key_manager.revoke_session(first_token)
         assert not key_manager.authenticate(first_token)
+        assert key_manager.authenticate(second_token)
+
+        monkeypatch.setattr("backend.app.core.encryption.time.time", lambda: 10**20)
+        assert not key_manager.authenticate(second_token)
+    finally:
+        key_manager.lock()
+
+
+def test_passphrase_rotation_revokes_existing_sessions():
+    key_manager.setup("correct horse battery staple", generate_salt())
+    first_token = key_manager.session_token
+    try:
+        _, replacement, _ = key_manager.prepare_passphrase_change("new correct battery staple")
+        key_manager.activate_fernet(replacement)
+        assert first_token and not key_manager.authenticate(first_token)
         assert key_manager.authenticate(key_manager.session_token)
     finally:
         key_manager.lock()
@@ -137,6 +156,52 @@ def test_discard_removes_the_encrypted_database_snapshot(tmp_path):
         database.discard()
         assert not database.is_unlocked
         assert not database_path.exists()
+    finally:
+        database.lock()
+        key_manager.lock()
+
+
+def test_read_only_connection_does_not_reencrypt_snapshot(tmp_path, monkeypatch):
+    database_path = tmp_path / "portfolio.db.encrypted"
+    key_manager.setup("correct horse battery staple", generate_salt())
+    database = EncryptedDatabase(database_path)
+    try:
+        database.unlock()
+        with database.connection() as conn:
+            conn.execute("CREATE TABLE holdings (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            conn.execute("INSERT INTO holdings (name) VALUES ('private')")
+
+        persisted = []
+        monkeypatch.setattr(database, "_persist", lambda: persisted.append(True))
+        with database.connection() as conn:
+            assert conn.execute("SELECT name FROM holdings").fetchone()["name"] == "private"
+        assert persisted == []
+    finally:
+        database.lock()
+        key_manager.lock()
+
+
+def test_existing_encrypted_database_is_upgraded_without_losing_data(tmp_path):
+    database_path = tmp_path / "portfolio.db.encrypted"
+    salt = generate_salt()
+    verifier = key_manager.setup("correct horse battery staple", salt)
+    database = EncryptedDatabase(database_path)
+    try:
+        database.unlock()
+        with database.connection() as conn:
+            init_db(conn)
+            conn.execute("INSERT INTO brokers(name) VALUES ('Existing broker')")
+            # Simulates a snapshot created before the new write-time default.
+            conn.execute("DELETE FROM app_settings WHERE key='decision_coach_base_currency'")
+
+        database.lock()
+        key_manager.lock()
+        key_manager.unlock("correct horse battery staple", salt, verifier)
+        database.unlock()
+        with database.connection() as conn:
+            init_db(conn)
+            assert conn.execute("SELECT name FROM brokers").fetchone()["name"] == "Existing broker"
+            assert conn.execute("SELECT value FROM app_settings WHERE key='decision_coach_base_currency'").fetchone()["value"] == "USD"
     finally:
         database.lock()
         key_manager.lock()

@@ -125,3 +125,24 @@ def test_later_import_reconciles_adds_updates_and_deletes(sqlite_conn):
     assert len(preview.new_rows) == len(preview.modified_rows) == len(preview.deleted_rows) == 1
     result = commit_statement(sqlite_conn, ImportCommitRequest(broker_id=broker["id"], csv_text=second, statement_date="2026-07-31", expected_configuration_version=preview.configuration_version))
     assert (result.added_rows, result.modified_rows, result.deleted_rows) == (1, 1, 1)
+
+
+def test_import_strips_acquisition_date_postfix_before_preview_and_reconciliation(sqlite_conn):
+    init_db(sqlite_conn)
+    unlock_for_imports()
+    csv = "Account,Symbol,Name,Quantity,Value,Purchase Date,Lot\nACC-1,AAA,Alpha,2,20,20260823;043233,L1\n"
+    draft = BrokerDraft(
+        name="Dated broker", default_currency="USD", header_signature=["Account", "Symbol", "Quantity"],
+        mappings={"account_number": "Account", "symbol": "Symbol", "security_name": "Name", "units": "Quantity", "total_fmv": "Value", "acquisition_date": "Purchase Date", "lot_number": "Lot"},
+    )
+    saved = save_broker(sqlite_conn, draft, preview_broker_configuration(sqlite_conn, draft, csv, "USD"))
+    first = preview_statement(sqlite_conn, ImportPreviewRequest(broker_id=saved["id"], csv_text=csv, statement_date="2026-08-31"))
+    assert first.rows[0].acquisition_date == "20260823"
+    commit_statement(sqlite_conn, ImportCommitRequest(broker_id=saved["id"], csv_text=csv, statement_date="2026-08-31", expected_configuration_version=first.configuration_version))
+
+    updated_csv = csv.replace("2,20", "3,30")
+    second = preview_statement(sqlite_conn, ImportPreviewRequest(broker_id=saved["id"], csv_text=updated_csv, statement_date="2026-09-30"))
+    assert (len(second.new_rows), len(second.modified_rows), len(second.deleted_rows)) == (0, 1, 0)
+    commit_statement(sqlite_conn, ImportCommitRequest(broker_id=saved["id"], csv_text=updated_csv, statement_date="2026-09-30", expected_configuration_version=second.configuration_version))
+    position = sqlite_conn.execute("SELECT acquisition_date, units FROM positions").fetchone()
+    assert tuple(position) == ("20260823", 3)

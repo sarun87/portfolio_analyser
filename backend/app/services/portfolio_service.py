@@ -7,7 +7,7 @@ from typing import Optional
 
 from backend.app.services.import_service import derive_per_unit_and_total
 from backend.app.services.models import AnalyticsPoint, CountryReturn, DashboardAnalytics, Position, PositionCreate, PositionUpdate, TimeSeriesPoint
-from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, get_display_currency
+from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, fx_rate_lookup, get_display_currency
 from backend.app.services.repositories import (
     get_or_create_account, get_broker_by_name, get_or_create_security,
     insert_import, insert_position,
@@ -17,6 +17,14 @@ from cryptography.fernet import InvalidToken
 
 
 POSITION_SELECT_SQL = """
+WITH latest_prices AS (
+  SELECT security_id, price, price_date
+  FROM (
+    SELECT security_id, price, price_date,
+           ROW_NUMBER() OVER (PARTITION BY security_id ORDER BY price_date DESC, id DESC) AS sequence
+    FROM price_history
+  ) WHERE sequence = 1
+)
 SELECT
   p.id,
   s.id AS security_id,
@@ -36,20 +44,17 @@ SELECT
   p.units,
   p.per_unit_cost_basis,
   p.total_cost_basis,
-  COALESCE((SELECT ph.price FROM price_history ph WHERE ph.security_id = s.id ORDER BY ph.price_date DESC, ph.id DESC LIMIT 1), p.per_unit_fmv) AS per_unit_fmv,
-  CASE WHEN (SELECT ph.price FROM price_history ph WHERE ph.security_id = s.id ORDER BY ph.price_date DESC, ph.id DESC LIMIT 1) IS NOT NULL
-       THEN p.units * (SELECT ph.price FROM price_history ph WHERE ph.security_id = s.id ORDER BY ph.price_date DESC, ph.id DESC LIMIT 1)
+  COALESCE(latest_prices.price, p.per_unit_fmv) AS per_unit_fmv,
+  CASE WHEN latest_prices.price IS NOT NULL
+       THEN p.units * latest_prices.price
        ELSE p.total_fmv END AS total_fmv,
   p.currency,
-  (
-    SELECT MAX(ph.price_date)
-    FROM price_history ph
-    WHERE ph.security_id = s.id
-  ) AS last_price_update
+  latest_prices.price_date AS last_price_update
 FROM positions p
 JOIN accounts a ON a.id = p.account_id
 JOIN brokers b ON b.id = a.broker_id
 JOIN securities s ON s.id = p.security_id
+LEFT JOIN latest_prices ON latest_prices.security_id = s.id
 """
 
 POSITIONS_SQL = POSITION_SELECT_SQL + """
@@ -60,11 +65,11 @@ ORDER BY b.name, a.account_mask, s.name, p.lot_number
 """
 
 
-def _position_from_row(conn: sqlite3.Connection, row, display_currency: str) -> Position:
+def _position_from_row(conn: sqlite3.Connection, row, display_currency: str, rates: Optional[dict[tuple[str, str], float]] = None) -> Position:
     fmv = row["total_fmv"]
     cost = row["total_cost_basis"]
-    fmv_display = convert_amount(conn, fmv, row["currency"], display_currency)
-    cost_display = convert_amount(conn, cost, row["currency"], display_currency)
+    fmv_display = convert_amount(conn, fmv, row["currency"], display_currency, rates)
+    cost_display = convert_amount(conn, cost, row["currency"], display_currency, rates)
     gain = fmv_display - cost_display if fmv_display is not None and cost_display is not None else None
     native_gain = fmv - cost if fmv is not None and cost is not None else None
     pct = (native_gain / cost * 100) if native_gain is not None and cost not in (None, 0) else None
@@ -89,9 +94,9 @@ def _position_from_row(conn: sqlite3.Connection, row, display_currency: str) -> 
         total_cost_basis=cost,
         per_unit_fmv=row["per_unit_fmv"],
         total_fmv=fmv,
-        per_unit_cost_basis_display=convert_amount(conn, row["per_unit_cost_basis"], row["currency"], display_currency),
+        per_unit_cost_basis_display=convert_amount(conn, row["per_unit_cost_basis"], row["currency"], display_currency, rates),
         total_cost_basis_display=cost_display,
-        per_unit_fmv_display=convert_amount(conn, row["per_unit_fmv"], row["currency"], display_currency),
+        per_unit_fmv_display=convert_amount(conn, row["per_unit_fmv"], row["currency"], display_currency, rates),
         total_fmv_display=fmv_display,
         unrealized_gain_loss=gain,
         unrealized_gain_loss_native=native_gain,
@@ -116,7 +121,8 @@ def _decrypt_account_number(encrypted: Optional[str]) -> Optional[str]:
 
 def list_positions(conn: sqlite3.Connection) -> list[Position]:
     display_currency = get_display_currency(conn)
-    return [_position_from_row(conn, row, display_currency) for row in conn.execute(POSITIONS_SQL)]
+    rates = fx_rate_lookup(conn)
+    return [_position_from_row(conn, row, display_currency, rates) for row in conn.execute(POSITIONS_SQL)]
 
 
 def get_position(conn: sqlite3.Connection, position_id: int) -> Position:

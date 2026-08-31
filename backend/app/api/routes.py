@@ -114,6 +114,7 @@ from backend.app.services.fee_service import (
     accept_public_fee, delete_portfolio_fee, fee_analysis, get_fee_settings, list_portfolio_fees,
     list_security_fees, save_fee_settings, save_portfolio_fee, save_security_fee,
 )
+from backend.app.services.analytics_cache import analytics_cache
 
 
 SESSION_COOKIE_NAME = "portfolio_session"
@@ -150,7 +151,7 @@ def require_unlocked(
         origin = request.headers.get("origin", "").rstrip("/")
         if origin not in TRUSTED_ORIGINS:
             raise HTTPException(status_code=403, detail="Request origin is not trusted. Add the browser-facing origin to PORTFOLIO_TRUSTED_ORIGINS.")
-        if not (key_manager.authenticate_csrf(csrf_cookie) and key_manager.authenticate_csrf(csrf_header)):
+        if not (key_manager.authenticate_csrf(session_token, csrf_cookie) and key_manager.authenticate_csrf(session_token, csrf_header)):
             raise HTTPException(status_code=403, detail="A valid CSRF token is required.")
 
 
@@ -210,6 +211,15 @@ def unlock_auth(request: UnlockRequest, response: Response) -> AuthStatus:
 def lock_auth(response: Response) -> AuthStatus:
     database_manager.lock()
     key_manager.lock()
+    salt, verifier = load_encryption_config()
+    clear_session_cookies(response)
+    return AuthStatus(configured=bool(salt and verifier), unlocked=False)
+
+
+@router.post("/auth/logout", response_model=AuthStatus)
+def logout_auth(response: Response, session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME)) -> AuthStatus:
+    """Revoke only this browser session; the shared portfolio stays unlocked."""
+    key_manager.revoke_session(session_token)
     salt, verifier = load_encryption_config()
     clear_session_cookies(response)
     return AuthStatus(configured=bool(salt and verifier), unlocked=False)
@@ -364,18 +374,19 @@ def pl() -> list[Position]:
 @router.get("/analytics/dashboard", response_model=DashboardAnalytics)
 def analytics_dashboard() -> DashboardAnalytics:
     with get_connection() as conn:
-        return dashboard(conn)
+        return analytics_cache.get("dashboard", database_manager.revision, lambda: dashboard(conn))
 
 
 @router.get("/insights", response_model=Insights)
 def portfolio_insights() -> Insights:
     with get_connection() as conn:
-        from backend.app.services.advanced_findings import advanced_findings
-        result = insights(conn)
-        severity = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-        result.findings = sorted(result.findings + advanced_findings(conn),
-                                 key=lambda item: (severity[item.severity], item.impact_amount or 0), reverse=True)
-        return result
+        return analytics_cache.get("insights:basic", database_manager.revision, lambda: insights(conn, include_forecast=False))
+
+
+@router.get("/insights/projection", response_model=Insights)
+def portfolio_projection_insights() -> Insights:
+    with get_connection() as conn:
+        return analytics_cache.get("insights:projection", database_manager.revision, lambda: insights(conn, include_forecast=True))
 
 
 @router.get("/review-inbox", response_model=list[InsightFinding])
@@ -383,8 +394,7 @@ def portfolio_review_inbox() -> list[InsightFinding]:
     with get_connection() as conn:
         from backend.app.services.advanced_findings import advanced_findings
         severity = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-        return sorted(insights(conn).findings + advanced_findings(conn),
-                      key=lambda item: (severity[item.severity], item.impact_amount or 0), reverse=True)
+        return analytics_cache.get("review-inbox", database_manager.revision, lambda: sorted(insights(conn, include_forecast=False).findings + advanced_findings(conn), key=lambda item: (severity[item.severity], item.impact_amount or 0), reverse=True))
 
 
 @router.get("/snapshot-comparison", response_model=SnapshotComparison)
@@ -448,7 +458,7 @@ def stress_test(payload: StressTestRequest) -> StressTestResult:
 @router.get("/look-through", response_model=ExposureAnalysis)
 def look_through() -> ExposureAnalysis:
     with get_connection() as conn:
-        return exposure_analysis(conn)
+        return analytics_cache.get("exposure", database_manager.revision, lambda: exposure_analysis(conn))
 
 
 @router.get("/fund-compositions/{security_id}", response_model=Optional[FundComposition])
@@ -543,7 +553,7 @@ def import_manual_reference_history(payload: ManualMarketSeriesInput) -> History
 @router.get("/risk-analysis", response_model=RiskAnalysis)
 def portfolio_risk_analysis() -> RiskAnalysis:
     with get_connection() as conn:
-        return risk_analysis(conn)
+        return analytics_cache.get("risk", database_manager.revision, lambda: risk_analysis(conn))
 
 
 @router.get("/security-fees", response_model=list[SecurityFee])
@@ -619,7 +629,7 @@ def update_fee_settings(payload: FeeSettings) -> FeeSettings:
 @router.get("/fee-analysis", response_model=FeeAnalysis)
 def portfolio_fee_analysis() -> FeeAnalysis:
     with get_connection() as conn:
-        return fee_analysis(conn)
+        return analytics_cache.get("fees", database_manager.revision, lambda: fee_analysis(conn))
 
 
 @router.get("/settings/assumptions", response_model=FinancialAssumptions)
@@ -714,7 +724,7 @@ def remove_allocation_category(name: str) -> dict[str, bool]:
 @router.get("/goals", response_model=GoalsSummary)
 def goals() -> GoalsSummary:
     with get_connection() as conn:
-        return list_goals_summary(conn)
+        return analytics_cache.get("goals", database_manager.revision, lambda: list_goals_summary(conn))
 
 
 @router.post("/goals", response_model=Goal)

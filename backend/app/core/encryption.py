@@ -4,7 +4,8 @@ import base64
 import json
 import os
 import secrets
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -17,10 +18,17 @@ from backend.app.core.config import AUTH_CONFIG_PATH, ensure_data_dir
 
 VERIFIER_TEXT = b"portfolio-analyser-verifier-v1"
 KDF_ITERATIONS = 390_000
+SESSION_TTL_SECONDS = int(os.getenv("PORTFOLIO_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
 
 
 class EncryptionError(RuntimeError):
     pass
+
+
+@dataclass
+class Session:
+    csrf_token: str
+    expires_at: float
 
 
 def generate_salt() -> bytes:
@@ -42,8 +50,8 @@ def derive_key(passphrase: str, salt: bytes) -> bytes:
 @dataclass
 class KeyManager:
     _fernet: Optional[Fernet] = None
-    _session_token: Optional[str] = None
-    _csrf_token: Optional[str] = None
+    _sessions: dict[str, Session] = field(default_factory=dict)
+    _latest_session_token: Optional[str] = None
 
     @property
     def is_unlocked(self) -> bool:
@@ -51,26 +59,52 @@ class KeyManager:
 
     def lock(self) -> None:
         self._fernet = None
-        self._session_token = None
-        self._csrf_token = None
+        self._sessions.clear()
+        self._latest_session_token = None
 
     @property
     def session_token(self) -> Optional[str]:
-        return self._session_token
+        return self._latest_session_token
 
     @property
     def csrf_token(self) -> Optional[str]:
-        return self._csrf_token
+        session = self._session_for(self._latest_session_token)
+        return session.csrf_token if session else None
 
     def authenticate(self, token: Optional[str]) -> bool:
-        return bool(self._session_token and token and secrets.compare_digest(self._session_token, token))
+        return self._session_for(token) is not None
 
-    def authenticate_csrf(self, token: Optional[str]) -> bool:
-        return bool(self._csrf_token and token and secrets.compare_digest(self._csrf_token, token))
+    def authenticate_csrf(self, session_token: Optional[str], csrf_token: Optional[str] = None) -> bool:
+        # The one-argument form remains useful for internal callers/tests and
+        # validates against the most recently created session.
+        if csrf_token is None:
+            csrf_token, session_token = session_token, self._latest_session_token
+        session = self._session_for(session_token)
+        return bool(session and csrf_token and secrets.compare_digest(session.csrf_token, csrf_token))
+
+    def revoke_session(self, token: Optional[str]) -> None:
+        if token:
+            self._sessions.pop(token, None)
+            if token == self._latest_session_token:
+                self._latest_session_token = next(iter(self._sessions), None)
+
+    def _session_for(self, token: Optional[str]) -> Optional[Session]:
+        if not token:
+            return None
+        session = self._sessions.get(token)
+        if not session:
+            return None
+        if session.expires_at <= time.time():
+            self._sessions.pop(token, None)
+            if token == self._latest_session_token:
+                self._latest_session_token = next(iter(self._sessions), None)
+            return None
+        return session
 
     def setup(self, passphrase: str, salt: bytes) -> str:
         key = derive_key(passphrase, salt)
         self._fernet = Fernet(key)
+        self._sessions.clear()
         self._new_session()
         return self.encrypt(VERIFIER_TEXT.decode("utf-8"))
 
@@ -82,11 +116,19 @@ class KeyManager:
 
     def activate_fernet(self, fernet: Fernet) -> None:
         self._fernet = fernet
+        # A passphrase change must invalidate every session authenticated with
+        # the previous encryption key, except for the fresh caller session.
+        self._sessions.clear()
         self._new_session()
 
     def _new_session(self) -> None:
-        self._session_token = secrets.token_urlsafe(32)
-        self._csrf_token = secrets.token_urlsafe(32)
+        now = time.time()
+        for stale_token, session in list(self._sessions.items()):
+            if session.expires_at <= now:
+                self._sessions.pop(stale_token, None)
+        token = secrets.token_urlsafe(32)
+        self._sessions[token] = Session(csrf_token=secrets.token_urlsafe(32), expires_at=now + SESSION_TTL_SECONDS)
+        self._latest_session_token = token
 
     def unlock(self, passphrase: str, salt: bytes, verifier_token: str) -> None:
         key = derive_key(passphrase, salt)
