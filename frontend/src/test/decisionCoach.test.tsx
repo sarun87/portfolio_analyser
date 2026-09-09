@@ -96,6 +96,11 @@ describe("decision coach workspaces", () => {
     expect(guidance.compareDocumentPosition(inputs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     cleanup();
 
+    render(<ProjectionSettings insights={insights} calculationInProgress assumptions={{monthly_expenses: 1200}} scheduledExpenses={[]} currency="USD" onChanged={vi.fn()}/>);
+    expect(screen.getByText(/Projection calculations are in progress/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("1200")).toBeInTheDocument();
+    cleanup();
+
     const summary = {
       display_currency:"USD", investable_financial_assets:200, total_allocated:200, unallocated_remainder:0, over_allocated:false,
       goals:[
@@ -173,6 +178,21 @@ describe("decision coach workspaces", () => {
     render(<PositionsTable positions={[fund]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} currencyMode="position" onCurrencyModeChange={onCurrencyModeChange} />);
     fireEvent.click(screen.getByLabelText("Use position currency"));
     expect(onCurrencyModeChange).toHaveBeenCalledWith("display");
+  });
+
+  it("combines multi-select filters across position columns without entering edit mode", () => {
+    const apple = {...fund, security_name:"Apple", symbol:"AAPL", broker_name:"Broker A", allocation_category:"Large Cap"};
+    const microsoft = {...fund, id:2, security_name:"Microsoft", symbol:"MSFT", broker_name:"Broker A", allocation_category:"Large Cap"};
+    const bond = {...fund, id:3, security_name:"Bond", symbol:"BND", broker_name:"Broker B", allocation_category:"Bonds"};
+    render(<PositionsTable positions={[apple, microsoft, bond]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} />);
+    fireEvent.click(screen.getByText("Filters"));
+    fireEvent.click(screen.getByRole("checkbox", {name:"Broker A"}));
+    fireEvent.click(screen.getByRole("checkbox", {name:"AAPL"}));
+    fireEvent.click(screen.getByRole("checkbox", {name:"MSFT"}));
+    expect(screen.getByText("Apple")).toBeInTheDocument();
+    expect(screen.getByText("Microsoft")).toBeInTheDocument();
+    expect(screen.queryByText("Bond")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", {name:/edit mode/i})).toBeEnabled();
   });
 
   it("keeps edited per-unit and total cost and FMV values in sync", async () => {
@@ -280,14 +300,19 @@ describe("decision coach workspaces", () => {
     for (const label of ["Allocation Category","Sector","Exchange","Investment Country"]) {
       expect(screen.getByRole("checkbox",{name:label})).toBeInTheDocument();
     }
-    expect(screen.getByText(/Column mappings are saved with this broker/)).toBeInTheDocument();
+    expect(screen.getByText(/Edit any normalized value in the table/)).toBeInTheDocument();
     for (const heading of ["Account","Allocation","Location","Acquisition Date","Lot","Currency"]) {
       expect(screen.getByRole("columnheader",{name:heading})).toBeInTheDocument();
     }
-    expect(screen.getByText("Diversified")).toBeInTheDocument();
-    expect(screen.getByText("India")).toBeInTheDocument();
+    expect(screen.getByLabelText("CSV row 2 Sector")).toHaveValue("Diversified");
+    expect(screen.getByLabelText("CSV row 2 Investment Country")).toHaveValue("India");
     expect(screen.getByText("statement")).toBeInTheDocument();
-    expect(screen.getByText("LOT-1")).toBeInTheDocument();
+    expect(screen.getByLabelText("CSV row 2 Lot Number")).toHaveValue("LOT-1");
+
+    fireEvent.change(screen.getByLabelText("CSV row 2 Units"), {target:{value:"3"}});
+    expect(screen.getByText("Refresh required")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name:"Refresh Preview"}));
+    await waitFor(() => expect(apiMock.previewImport).toHaveBeenLastCalledWith(expect.objectContaining({row_overrides:{2:{units:"3"}}})));
   });
 
   it("opens the broker editor and supports the advanced JSON configuration mode", () => {

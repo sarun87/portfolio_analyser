@@ -415,7 +415,51 @@ def _performance_indexes(conn: sqlite3.Connection) -> None:
     """)
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes))
+def _lot_identity_index(conn: sqlite3.Connection) -> None:
+    """Index the additive lot identity without imposing a risky unique constraint.
+
+    Existing databases can contain historically duplicated or incomplete lot
+    data, so a unique index would make upgrading destructive.  The columns
+    already exist in all supported schemas; this migration only adds an index.
+    """
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_positions_lot_identity
+        ON positions(account_id, security_id, lot_number, acquisition_date, per_unit_cost_basis)""")
+
+
+def _report_branding(conn: sqlite3.Connection) -> None:
+    """Persist report defaults inside the encrypted database."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS report_branding (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        title TEXT NOT NULL,
+        subtitle TEXT,
+        footer TEXT,
+        logo_data BLOB,
+        logo_mime_type TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("""INSERT OR IGNORE INTO report_branding (id, title)
+        VALUES (1, 'Portfolio Analyser Net-Worth Report')""")
+
+
+def _liabilities(conn: sqlite3.Connection) -> None:
+    """Add liabilities without changing existing encrypted portfolio data."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS liabilities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_name TEXT NOT NULL,
+        liability_type TEXT NOT NULL,
+        custom_type TEXT,
+        account_reference_enc TEXT,
+        account_reference_mask TEXT,
+        outstanding_balance REAL NOT NULL CHECK (outstanding_balance >= 0),
+        currency TEXT NOT NULL DEFAULT 'USD',
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_liabilities_type ON liabilities(liability_type)")
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

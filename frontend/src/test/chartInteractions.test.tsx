@@ -18,8 +18,8 @@ describe("dynamic chart interactions", () => {
     expect(visibleYDomain([{ value: 100 }, { value: 101 }], ["value"], true)).toEqual([0, 109.08]);
   });
 
-  it("explodes only pie slices below the five-percent threshold", () => {
-    expect(smallPieSliceIndexes([{ value: 95 }, { value: 4.99 }, { value: 0.01 }, { value: 5 }], 105)).toEqual([1, 2, 3]);
+  it("explodes only pie slices below the three-percent threshold", () => {
+    expect(smallPieSliceIndexes([{ value: 95 }, { value: 4.99 }, { value: 0.01 }, { value: 5 }], 105)).toEqual([2]);
     expect(smallPieSliceIndexes([{ value: 5 }, { value: 95 }], 100)).toEqual([]);
   });
 

@@ -26,6 +26,7 @@ import {
   Activity,
   BadgeDollarSign,
   Unlock,
+  Download,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -62,6 +63,7 @@ import type {
   DashboardAnalytics,
   FxRate,
   ImportPreview,
+  PreviewRow,
   Position,
   PositionCreatePayload,
   PositionUpdatePayload,
@@ -76,10 +78,10 @@ import type {
   Insights, InsightFinding
   , SavedScenario, ScenarioInput, ScenarioAnalysis, StressTestInput, StressTestResult,
   ExposureAnalysis, FundCompositionInput, FundConstituent, PublicMetadataPreview, FundMetadata, PeerResearch,
-  RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput
+  RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput, ReportBrandingPayload, Liability, LiabilityPayload
 } from "./lib/types";
 
-type View = "overview" | "assets" | "portfolio" | "analytics" | "planning" | "upload" | "settings";
+type View = "overview" | "assets" | "liabilities" | "portfolio" | "analytics" | "planning" | "upload" | "settings";
 
 const fieldLabels: Record<string, string> = {
   account_number: "Account Number",
@@ -104,6 +106,7 @@ const lockableFields = ["security_name", "symbol", "security_type", "allocation_
 const navItems: Array<{ view: View; label: string; icon: typeof Table2 }> = [
   { view: "overview", label: "Overview", icon: BarChart3 },
   { view: "assets", label: "Bank/RE/PE", icon: Landmark },
+  { view: "liabilities", label: "Liabilities", icon: BadgeDollarSign },
   { view: "portfolio", label: "Portfolio", icon: PieIcon },
   { view: "analytics", label: "Analytics & Insights", icon: Lightbulb },
   { view: "planning", label: "Planning", icon: Target },
@@ -119,6 +122,14 @@ const sectors = ["Communication Services", "Consumer Discretionary", "Consumer S
 
 type PositionColumn = "broker" | "account" | "security" | "type" | "allocation" | "sector" | "country" | "exchange" | "snapshot" | "acquired" | "lot" | "units" | "cost_basis" | "fmv" | "currency";
 type TableCurrencyMode = "display" | "position";
+type PositionFilterKey = "broker_name" | "account_mask" | "symbol" | "security_type" | "allocation_category" | "sector" | "investment_country" | "exchange" | "acquisition_date" | "lot_number" | "currency";
+const positionFilterColumns: Array<{ key: PositionFilterKey; label: string }> = [
+  { key: "broker_name", label: "Broker" }, { key: "account_mask", label: "Account" },
+  { key: "symbol", label: "Symbol" }, { key: "security_type", label: "Type" },
+  { key: "allocation_category", label: "Allocation" }, { key: "sector", label: "Sector" },
+  { key: "investment_country", label: "Country" }, { key: "exchange", label: "Exchange" },
+  { key: "acquisition_date", label: "Acquired" }, { key: "lot_number", label: "Lot" }, { key: "currency", label: "Currency" }
+];
 const positionColumns: Array<{ key: PositionColumn; label: string }> = [
   { key: "broker", label: "Broker" }, { key: "account", label: "Account" }, { key: "security", label: "Security" },
   { key: "type", label: "Type" }, { key: "allocation", label: "Allocation" }, { key: "country", label: "Country" },
@@ -514,6 +525,7 @@ export function App() {
   const [staticAccounts, setStaticAccounts] = useState<StaticAccount[]>([]);
   const [realEstate, setRealEstate] = useState<RealEstateAsset[]>([]);
   const [privateEquity, setPrivateEquity] = useState<PrivateEquityAsset[]>([]);
+  const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [reviewFindings, setReviewFindings] = useState<InsightFinding[] | null>(null);
   const [goals, setGoals] = useState<GoalsSummary | null>(null);
@@ -522,7 +534,9 @@ export function App() {
   const [allocationCategoryOptions, setAllocationCategoryOptions] = useState<string[]>(fallbackAllocationCategories);
   const [scenarios, setScenarios] = useState<SavedScenario[]>([]);
   const [scheduledExpenses, setScheduledExpenses] = useState<ScheduledExpense[]>([]);
-  const [view, setView] = useSessionValue<View>("portfolio-active-view", "overview", ["overview", "assets", "portfolio", "analytics", "planning", "upload", "settings"]);
+  const [projectionInputsLoaded, setProjectionInputsLoaded] = useState(false);
+  const [projectionCalculating, setProjectionCalculating] = useState(false);
+  const [view, setView] = useSessionValue<View>("portfolio-active-view", "overview", ["overview", "assets", "liabilities", "portfolio", "analytics", "planning", "upload", "settings"]);
   const [overviewValuesHidden, setOverviewValuesHidden] = useSessionBoolean("portfolio-overview-values-hidden");
   const [assetSection, setAssetSection] = useSessionValue<"banking" | "real-estate" | "private-equity">("portfolio-assets-section", "banking", ["banking", "real-estate", "private-equity"]);
   const [portfolioSection, setPortfolioSection] = useSessionValue<"growth" | "allocation" | "profit-loss" | "positions">("portfolio-portfolio-section", "positions", ["growth", "allocation", "profit-loss", "positions"]);
@@ -541,6 +555,7 @@ export function App() {
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
   const [settingsInitialPage, setSettingsInitialPage] = useState<"general">("general");
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -647,12 +662,28 @@ export function App() {
   }, [auth?.unlocked, view, assetSection]);
 
   useEffect(() => {
+    if (auth?.unlocked && view === "liabilities") api.liabilities().then(setLiabilities).catch((error) => setMessage(error.message));
+  }, [auth?.unlocked, view, currency?.display_currency]);
+
+  useEffect(() => {
     if (!auth?.unlocked || view !== "planning") return;
     if (planningSection === "goals") api.goals().then(setGoals).catch((error) => setMessage(error.message));
     if (planningSection === "expenses-projections") {
-      Promise.all([api.assumptions(), api.scheduledExpenses(), api.projectionInsights()])
-        .then(([nextAssumptions, expenses, nextInsights]) => { setAssumptions(nextAssumptions); setScheduledExpenses(expenses); setInsights(nextInsights); })
-        .catch((error) => setMessage(error.message));
+      let active = true;
+      setProjectionInputsLoaded(false);
+      setProjectionCalculating(true);
+      Promise.all([api.assumptions(), api.scheduledExpenses()])
+        .then(([nextAssumptions, expenses]) => {
+          if (!active) return;
+          setAssumptions(nextAssumptions);
+          setScheduledExpenses(expenses);
+          setProjectionInputsLoaded(true);
+          return api.projectionInsights();
+        })
+        .then((nextInsights) => { if (active && nextInsights) setInsights(nextInsights); })
+        .catch((error) => { if (active) setMessage(error.message); })
+        .finally(() => { if (active) setProjectionCalculating(false); });
+      return () => { active = false; };
     }
   }, [auth?.unlocked, view, planningSection]);
 
@@ -796,6 +827,7 @@ export function App() {
             positions={positions}
             valuesHidden={overviewValuesHidden}
             onValuesHiddenChange={setOverviewValuesHidden}
+            onDownloadReport={() => setReportDialogOpen(true)}
             onAllocationClick={(label) => {
               setPositionFilter(label);
               setView("portfolio");
@@ -803,6 +835,7 @@ export function App() {
             }}
           />
         )}
+        {reportDialogOpen && <ReportDialog onClose={() => setReportDialogOpen(false)} onDownloaded={() => setMessage("Report downloaded.")} />}
         {view === "portfolio" && <WorkspaceTabs tabs={[{id:"positions",label:"Positions"},{id:"profit-loss",label:"Profit/Loss"},{id:"allocation",label:"Allocation"},{id:"growth",label:"Growth"}]} active={portfolioSection} onChange={id => setPortfolioSection(id as typeof portfolioSection)} />}
         {view === "portfolio" && portfolioSection === "profit-loss" && <ProfitLossTable positions={profitLoss} currencyMode={tableCurrencyMode} onCurrencyModeChange={setTableCurrencyMode} />}
         {view === "portfolio" && portfolioSection === "growth" && analytics && <GrowthView analytics={analytics} />}
@@ -832,7 +865,7 @@ export function App() {
         {view === "analytics" && analyticsSection === "scenario-lab" && goals && currency && <ScenarioLab scenarios={scenarios} positions={positions} goals={goals} currency={currency} onChanged={loadData} />}
         {view === "planning" && <WorkspaceTabs tabs={[{id:"goals",label:"Goals"},{id:"expenses-projections",label:"Expenses & Projections"},{id:"fees",label:"Fees"}]} active={planningSection} onChange={id => setPlanningSection(id as typeof planningSection)} />}
         {view === "planning" && planningSection === "goals" && goals && currency && <GoalsPage summary={goals} currency={currency} onChanged={loadData} />}
-        {view === "planning" && planningSection === "expenses-projections" && currency && insights && <ProjectionSettings insights={insights} assumptions={assumptions} scheduledExpenses={scheduledExpenses} currency={currency.display_currency} onChanged={loadData} />}
+        {view === "planning" && planningSection === "expenses-projections" && currency && projectionInputsLoaded && <ProjectionSettings insights={insights} calculationInProgress={projectionCalculating} assumptions={assumptions} scheduledExpenses={scheduledExpenses} currency={currency.display_currency} onChanged={loadData} />}
         {view === "planning" && planningSection === "fees" && currency && <FeesPage positions={positions} currency={currency.display_currency} />}
         {view === "assets" && <WorkspaceTabs tabs={[{id:"banking",label:"Banking"},{id:"real-estate",label:"Real Estate"},{id:"private-equity",label:"Private Equity"}]} active={assetSection} onChange={id => setAssetSection(id as typeof assetSection)} />}
         {view === "assets" && assetSection === "banking" && (
@@ -856,6 +889,7 @@ export function App() {
           />
         )}
         {view === "assets" && assetSection === "private-equity" && <PrivateEquityPage assets={privateEquity} currency={currency} onChanged={async text=>{setMessage(text);await loadData();}} />}
+        {view === "liabilities" && <LiabilitiesPage liabilities={liabilities} currency={currency} onChanged={async text => { setMessage(text); setLiabilities(await api.liabilities()); await loadCoreData(); }} />}
         {view === "upload" && (
           <UploadPage
             brokers={brokers}
@@ -945,12 +979,14 @@ export function Overview({
   analytics,
   positions,
   onAllocationClick,
+  onDownloadReport,
   valuesHidden: controlledValuesHidden,
   onValuesHiddenChange
 }: {
   analytics: DashboardAnalytics;
   positions: Position[];
   onAllocationClick: (label: string) => void;
+  onDownloadReport?: () => void;
   valuesHidden?: boolean;
   onValuesHiddenChange?: (hidden: boolean) => void;
 }) {
@@ -966,12 +1002,11 @@ export function Overview({
     <section className="stack">
       <div className="overviewPrivacy">
         <span>{valuesHidden ? "Overview values are hidden." : "Hide values before sharing your screen."}</span>
-        <button className="secondary" type="button" aria-pressed={valuesHidden} onClick={toggleValuesHidden}>
-          {valuesHidden ? "Show values" : "Hide values"}
-        </button>
+        <div className="overviewActions"><button className="secondary" type="button" onClick={onDownloadReport}><Download size={16} />Download report</button><button className="secondary" type="button" aria-pressed={valuesHidden} onClick={toggleValuesHidden}>{valuesHidden ? "Show values" : "Hide values"}</button></div>
       </div>
       <div className="metricGrid">
         <Metric label="Total Net Worth" value={displayedValue(money(analytics.total_net_worth, analytics.display_currency))} />
+        <Metric label="Total Liabilities" value={displayedValue(money(analytics.total_liabilities || 0, analytics.display_currency))} tone={analytics.total_liabilities ? "bad" : undefined} />
         <Metric label="Brokerage" value={displayedValue(money(analytics.brokerage_value, analytics.display_currency))} />
         <Metric label="Static Accounts" value={displayedValue(money(analytics.static_accounts_value, analytics.display_currency))} />
         <Metric label="Real Estate" value={displayedValue(money(analytics.real_estate_value, analytics.display_currency))} />
@@ -996,6 +1031,44 @@ export function Overview({
       </div>
     </section>
   );
+}
+
+function ReportDialog({ onClose, onDownloaded }: { onClose: () => void; onDownloaded: () => void }) {
+  const [reportType, setReportType] = useState<"summary" | "detail">("summary");
+  const [form, setForm] = useState<ReportBrandingPayload>({ title: "Portfolio Analyser Net-Worth Report", subtitle: "", footer: "" });
+  const [hasLogo, setHasLogo] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { api.reportBranding().then(value => { setForm({ title: value.title, subtitle: value.subtitle || "", footer: value.footer || "" }); setHasLogo(value.has_logo); }).catch(e => setError(e.message)); }, []);
+  const edit = (key: "title" | "subtitle" | "footer", value: string) => setForm(current => ({ ...current, [key]: value }));
+  async function logoChanged(file?: File) {
+    setError(null);
+    if (!file) return;
+    if (!["image/png", "image/jpeg"].includes(file.type)) { setError("Logo must be a PNG or JPEG image."); return; }
+    if (file.size > 2 * 1024 * 1024) { setError("Logo must be no larger than 2 MB."); return; }
+    const reader = new FileReader();
+    reader.onload = () => { setForm(current => ({ ...current, logo_data_base64: String(reader.result), remove_logo: false })); setHasLogo(true); };
+    reader.onerror = () => setError("Could not read the selected logo."); reader.readAsDataURL(file);
+  }
+  async function saveDefaults() {
+    setBusy(true); setError(null);
+    try { await api.saveReportBranding(form); setHasLogo(!form.remove_logo && (Boolean(form.logo_data_base64) || hasLogo)); setForm(current => ({ ...current, logo_data_base64: undefined, remove_logo: false })); }
+    catch (e) { setError(e instanceof Error ? e.message : "Could not save report defaults."); } finally { setBusy(false); }
+  }
+  async function generate() {
+    if (!form.title.trim()) { setError("Report title is required."); return; }
+    setBusy(true); setError(null);
+    try {
+      const blob = await api.generateReport({ ...form, report_type: reportType }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `net-worth-${reportType}-report.pdf`; anchor.click(); URL.revokeObjectURL(url); onDownloaded(); onClose();
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not generate report."); } finally { setBusy(false); }
+  }
+  return <div className="modalBackdrop" role="presentation"><section className="confirmDialog reportDialog" role="dialog" aria-modal="true" aria-labelledby="report-title">
+    <div className="panelHeader"><h2 id="report-title">Download net-worth report</h2><button className="iconOnly" aria-label="Close report dialog" onClick={onClose} disabled={busy}><X size={18}/></button></div>
+    <p className="muted">Reports are generated locally and download directly to your device.</p>
+    <div className="formGrid"><label>Report type<select value={reportType} onChange={e => setReportType(e.target.value as "summary" | "detail")} disabled={busy}><option value="summary">Summary — executive one-page overview</option><option value="detail">Detail — overview plus asset appendix</option></select></label><label>Title<input value={form.title} maxLength={160} onChange={e => edit("title", e.target.value)} disabled={busy}/></label><label>Subtitle (optional)<input value={form.subtitle || ""} maxLength={240} onChange={e => edit("subtitle", e.target.value)} disabled={busy}/></label><label>Footer / disclaimer (optional)<textarea value={form.footer || ""} maxLength={1000} onChange={e => edit("footer", e.target.value)} disabled={busy}/></label></div>
+    <div className="reportLogo"><label>Logo (PNG or JPEG, up to 2 MB)<input type="file" accept="image/png,image/jpeg" onChange={e => logoChanged(e.target.files?.[0])} disabled={busy}/></label>{hasLogo && <button className="secondary" type="button" disabled={busy} onClick={() => { setForm(current => ({ ...current, logo_data_base64: undefined, remove_logo: true })); setHasLogo(false); }}>Remove logo</button>}</div>
+    {error && <div className="error">{error}</div>}<div className="dialogActions"><button className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="secondary" onClick={saveDefaults} disabled={busy || !form.title.trim()}><Save size={16}/>Save defaults</button><button className="primaryButton" onClick={generate} disabled={busy || !form.title.trim()}><Download size={16}/>{busy ? "Generating…" : "Generate & download"}</button></div>
+  </section></div>;
 }
 
 function HiddenOverviewChart() {
@@ -1167,6 +1240,18 @@ function optionsWithCurrent(options: string[], current: string) {
   return options.includes(current) ? options : [current, ...options].filter(Boolean);
 }
 
+type TableFilterColumn<T> = { label: string; value: (row: T) => unknown };
+function useTableColumnFilters<T>(rows: T[], columns: TableFilterColumn<T>[]) {
+  const [filters, setFilters] = useState<Record<string, string[]>>({});
+  const filtered = useMemo(() => rows.filter(row => columns.every(column => {
+    const selected = filters[column.label] || [];
+    return !selected.length || selected.includes(String(column.value(row) ?? ""));
+  })), [columns, filters, rows]);
+  const active = Object.values(filters).reduce((sum, values) => sum + values.length, 0);
+  const control = <details className="columnPicker columnFilterPicker"><summary>Filters{active ? ` (${active})` : ""}</summary><div className="columnPickerMenu columnFilterMenu"><div className="columnPickerActions"><button className="secondary" disabled={!active} onClick={() => setFilters({})}>Clear filters</button></div>{columns.map(column => { const values = [...new Set(rows.map(row => String(column.value(row) ?? "")))].sort((a, b) => a.localeCompare(b)); return <fieldset key={column.label}><legend>{column.label}</legend>{values.map(value => <label key={value}><input type="checkbox" checked={(filters[column.label] || []).includes(value)} onChange={() => setFilters(current => { const selected = current[column.label] || []; const next = selected.includes(value) ? selected.filter(item => item !== value) : [...selected, value]; return {...current, [column.label]: next}; })}/>{value || "Unspecified"}</label>)}</fieldset>; })}</div></details>;
+  return { filtered, control };
+}
+
 export function PositionsTable({
   positions,
   brokers,
@@ -1206,6 +1291,7 @@ export function PositionsTable({
   const [showExitPrompt, setShowExitPrompt] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [visibleColumns, setVisibleColumns] = useState<PositionColumn[]>(storedPositionColumns);
+  const [columnFilters, setColumnFilters] = useState<Partial<Record<PositionFilterKey, string[]>>>({});
   const displayedCurrencyLabel = currencyMode === "position" ? "Position currency" : positions[0]?.display_currency || "USD";
 
   useEffect(() => {
@@ -1213,6 +1299,15 @@ export function PositionsTable({
   }, [visibleColumns]);
 
   const columnVisible = (column: PositionColumn) => visibleColumns.includes(column);
+  const activeColumnFilterCount = Object.values(columnFilters).reduce((count, values) => count + (values?.length || 0), 0);
+
+  function toggleColumnFilter(column: PositionFilterKey, value: string) {
+    setColumnFilters(current => {
+      const selected = current[column] || [];
+      const next = selected.includes(value) ? selected.filter(item => item !== value) : [...selected, value];
+      return { ...current, ...(next.length ? { [column]: next } : { [column]: undefined }) };
+    });
+  }
 
   function toggleColumn(column: PositionColumn) {
     setVisibleColumns((current) => current.includes(column) ? current.filter((key) => key !== column) : [...current, column]);
@@ -1228,6 +1323,9 @@ export function PositionsTable({
       if (key === "any_of" && Array.isArray(expected)) return expected.some(item => matches(position, item as PositionFilters));
       return String(position[key as keyof Position] ?? "").toLowerCase() === String(expected ?? "").toLowerCase();
     });
+    const matchesColumnFilters = (position: Position) => Object.entries(columnFilters).every(([key, selected]) =>
+      !selected?.length || selected.includes(String(position[key as PositionFilterKey] ?? ""))
+    );
     const rows = positions.filter((position) =>
       [
         position.broker_name,
@@ -1240,7 +1338,7 @@ export function PositionsTable({
         position.investment_country
       ]
         .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(needle)) && matches(position, structuredFilter)
+        .some((value) => String(value).toLowerCase().includes(needle)) && matches(position, structuredFilter) && matchesColumnFilters(position)
     );
     return [...rows].sort((left, right) => {
       const sortValue = (position: Position) => {
@@ -1256,7 +1354,7 @@ export function PositionsTable({
       const result = compareValues(leftValue, rightValue);
       return sort.direction === "asc" ? result : -result;
     });
-  }, [currencyMode, positions, query, sort, structuredFilter]);
+  }, [columnFilters, currencyMode, positions, query, sort, structuredFilter]);
 
   useEffect(() => {
     const visibleIds = new Set(filtered.map((position) => position.id));
@@ -1437,6 +1535,16 @@ export function PositionsTable({
                 <button className="secondary" onClick={() => setVisibleColumns(defaultPositionColumns)}>Select All</button>
                 <button className="secondary" onClick={() => setVisibleColumns(defaultPositionColumns)}>Reset Defaults</button>
               </div>
+            </div>
+          </details>
+          <details className="columnPicker columnFilterPicker">
+            <summary>Filters{activeColumnFilterCount ? ` (${activeColumnFilterCount})` : ""}</summary>
+            <div className="columnPickerMenu columnFilterMenu">
+              <div className="columnPickerActions"><button className="secondary" disabled={!activeColumnFilterCount} onClick={() => setColumnFilters({})}>Clear filters</button></div>
+              {positionFilterColumns.map((column) => {
+                const values = [...new Set(positions.map(position => String(position[column.key] ?? "")))].sort((left, right) => left.localeCompare(right));
+                return <fieldset key={column.key}><legend>{column.label}</legend>{values.map(value => <label key={value}><input type="checkbox" checked={(columnFilters[column.key] || []).includes(value)} onChange={() => toggleColumnFilter(column.key, value)} />{value || "Unspecified"}</label>)}</fieldset>;
+              })}
             </div>
           </details>
           <button className="secondary" disabled={editMode || addingPosition} onClick={() => { setShowAddPosition((current) => !current); setAddError(null); }}>
@@ -1727,9 +1835,10 @@ function ProfitLossBubbleChart({ positions }: { positions: Position[] }) {
 export function ProfitLossTable({ positions, currencyMode = "position", onCurrencyModeChange }: { positions: Position[]; currencyMode?: TableCurrencyMode; onCurrencyModeChange?: (mode: TableCurrencyMode) => void }) {
   const [sort, setSort] = useState<SortState<Position>>({ key: "unrealized_gain_loss_native", direction: "desc" });
   const displayedCurrencyLabel = currencyMode === "position" ? "Position currency" : positions[0]?.display_currency || "USD";
+  const { filtered: filteredPositions, control: filters } = useTableColumnFilters(positions, [{label:"Broker",value:p=>p.broker_name},{label:"Account",value:p=>p.account_mask},{label:"Symbol",value:p=>p.symbol},{label:"Lot",value:p=>p.lot_number},{label:"Currency",value:p=>p.currency}]);
   const sorted = useMemo(
     () =>
-      [...positions].sort((left, right) => {
+      [...filteredPositions].sort((left, right) => {
         const sortValue = (position: Position) => {
           if (sort.key === "security") return position.symbol || position.security_name;
           if (sort.key === "total_cost_basis") return currencyMode === "position" ? position.total_cost_basis : position.total_cost_basis_display ?? position.total_cost_basis;
@@ -1742,11 +1851,11 @@ export function ProfitLossTable({ positions, currencyMode = "position", onCurren
         const result = compareValues(leftValue, rightValue);
         return sort.direction === "asc" ? result : -result;
       }),
-    [currencyMode, positions, sort]
+    [currencyMode, filteredPositions, sort]
   );
   return (
     <section className="panel">
-      <div className="panelHeader"><h2>Unrealized Profit/Loss</h2><label className="tableCurrencyToggle"><input type="checkbox" checked={currencyMode === "position"} disabled={!onCurrencyModeChange} onChange={(event) => onCurrencyModeChange?.(event.target.checked ? "position" : "display")} />Use position currency</label></div>
+      <div className="panelHeader"><h2>Unrealized Profit/Loss</h2><div className="tableTools">{filters}<label className="tableCurrencyToggle"><input type="checkbox" checked={currencyMode === "position"} disabled={!onCurrencyModeChange} onChange={(event) => onCurrencyModeChange?.(event.target.checked ? "position" : "display")} />Use position currency</label></div></div>
       <ProfitLossBubbleChart positions={positions} />
       <div className="tableWrap desktopDataTable">
         <table>
@@ -1862,7 +1971,7 @@ function AllocationView({
   );
 }
 
-const smallPieSliceThreshold = 0.05;
+const smallPieSliceThreshold = 0.03;
 
 function ExplodedPieSlice(props: any) {
   const percent = Number(props.percent) || 0;
@@ -1997,6 +2106,14 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
     ...(preview.invalid_rows || []).filter(row => ignoredRowNumbers.includes(row.row_number))
   ].filter((row, index, rows) => rows.findIndex(item => item.row_number === row.row_number) === index) : [];
   const canCommit = Boolean(preview && !previewStale && !preview.duplicate && preview.rows.length > 0 && visibleInvalidRows.length === 0 && preview.errors.length === 0);
+  const previewValue = (row: PreviewRow, field: keyof PreviewRow) => rowOverrides[row.row_number]?.[field] ?? String(row[field] ?? "");
+  const updatePreviewRow = (row: PreviewRow, field: keyof PreviewRow, value: string) => {
+    setRowOverrides(current => ({
+      ...current,
+      [row.row_number]: { ...current[row.row_number], [field]: value || null }
+    }));
+    setPreviewStale(true);
+  };
 
   return (
     <section className="stack">
@@ -2060,7 +2177,7 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
               ))}
             </div>
           )}
-          <div className="notice">Column mappings are saved with this broker. Edit them in Settings → Brokers, then refresh this preview.</div>
+          <div className="notice">Edit any normalized value in the table, then refresh the preview to validate it and recalculate the import changes. Column mappings remain saved with this broker and can be changed in Settings → Brokers.</div>
           {visibleInvalidRows.length > 0 && <div className="stack"><div className="errorList">{visibleInvalidRows.length} row{visibleInvalidRows.length === 1 ? "" : "s"} need attention. Correct the values below or ignore them.</div>{visibleInvalidRows.map(row => <section className="panel" key={row.row_number}><h3>CSV row {row.row_number}</h3><code>{row.csv_record}</code><div className="errorList">{Object.entries(row.field_errors).map(([field, issues]) => <div key={field}>{fieldLabels[field] || field}: {issues.join(" ")}</div>)}</div><div className="formGrid">{Object.keys(row.editable_values).map(field => <label key={field}>{fieldLabels[field] || field}<input value={rowOverrides[row.row_number]?.[field] ?? row.editable_values[field] ?? ""} onChange={e => setRowOverrides(current => ({...current, [row.row_number]: {...current[row.row_number], [field]: e.target.value}}))}/></label>)}</div><button className="secondary" onClick={() => { setRowOverrides(current => { const next = {...current}; delete next[row.row_number]; return next; }); setIgnoredRowNumbers(current => current.includes(row.row_number) ? current : [...current, row.row_number]); }}>Ignore row</button></section>)}</div>}
           {visibleIgnoredRows.length > 0 && <div className="stack"><h3>Ignored rows</h3><div className="tableWrap"><table><thead><tr><th>CSV row</th><th>Raw values</th><th></th></tr></thead><tbody>{visibleIgnoredRows.map(row => <tr key={row.row_number}><td>{row.row_number}</td><td>{Object.entries(row.raw_values).map(([field, value]) => <div key={field}>{fieldLabels[field] || field}: {value || "—"}</div>)}</td><td><button className="secondary" onClick={() => setIgnoredRowNumbers(current => current.filter(number => number !== row.row_number))}>Restore to repair</button></td></tr>)}</tbody></table></div></div>}
           {((preview.new_rows || []).length > 0 || (preview.modified_rows || []).length > 0 || (preview.deleted_rows || []).length > 0) && <div className="stack"><h3>Import changes</h3>{(preview.new_rows || []).length > 0 && <div className="tableWrap"><h4>New securities</h4><table><tbody>{preview.new_rows.map(row => <tr key={row.row_number}><td>{row.symbol}</td><td>{row.security_name}</td><td>{row.units}</td></tr>)}</tbody></table></div>}{(preview.modified_rows || []).length > 0 && <div className="tableWrap"><h4>Modified securities</h4><table><tbody>{preview.modified_rows.map(row => <tr key={row.row_number}>{row.changed_fields.map(field => <td key={field}><strong>{fieldLabels[field] || field}</strong><br/><s>{String(row.current_values[field] ?? "—")}</s> → <mark>{String(row.proposed_values[field] ?? "—")}</mark></td>)}</tr>)}</tbody></table></div>}{(preview.deleted_rows || []).length > 0 && <div className="tableWrap"><h4>Deleted securities</h4><table><tbody>{preview.deleted_rows.map((row,index) => <tr key={index}><td>{String(row.current_values.symbol || "—")}</td><td>{String(row.current_values.security_name || "—")}</td><td>{String(row.current_values.units || "—")}</td></tr>)}</tbody></table></div>}</div>}
@@ -2101,27 +2218,27 @@ export function UploadPage({ brokers, onImported }: { brokers: Broker[]; onImpor
                 </tr>
               </thead>
               <tbody>
-                {preview.rows.slice(0, 25).map((row) => (
+                {preview.rows.map((row) => (
                   <tr key={row.row_number}>
-                    <td>{row.account_number || "-"}</td>
+                    <td><input aria-label={`CSV row ${row.row_number} Account Number`} className="previewInput" value={previewValue(row, "account_number")} onChange={e => updatePreviewRow(row, "account_number", e.target.value)} /></td>
                     <td>
-                      <strong>{row.symbol || "-"}</strong>
-                      <span>{row.security_name}</span>
+                      <input aria-label={`CSV row ${row.row_number} Symbol`} className="previewInput" value={previewValue(row, "symbol")} onChange={e => updatePreviewRow(row, "symbol", e.target.value)} />
+                      <input aria-label={`CSV row ${row.row_number} Security Name`} className="previewInput" value={previewValue(row, "security_name")} onChange={e => updatePreviewRow(row, "security_name", e.target.value)} />
                     </td>
-                    <td>{row.security_type}</td>
-                    <td>{row.allocation_category}</td>
-                    <td>{row.sector}</td>
-                    <td>{row.exchange}</td>
-                    <td>{row.investment_country}</td>
+                    <td><input aria-label={`CSV row ${row.row_number} Security Type`} className="previewInput" value={previewValue(row, "security_type")} onChange={e => updatePreviewRow(row, "security_type", e.target.value)} /></td>
+                    <td><input aria-label={`CSV row ${row.row_number} Allocation Category`} className="previewInput" value={previewValue(row, "allocation_category")} onChange={e => updatePreviewRow(row, "allocation_category", e.target.value)} /></td>
+                    <td><input aria-label={`CSV row ${row.row_number} Sector`} className="previewInput" value={previewValue(row, "sector")} onChange={e => updatePreviewRow(row, "sector", e.target.value)} /></td>
+                    <td><input aria-label={`CSV row ${row.row_number} Exchange`} className="previewInput" value={previewValue(row, "exchange")} onChange={e => updatePreviewRow(row, "exchange", e.target.value)} /></td>
+                    <td><input aria-label={`CSV row ${row.row_number} Investment Country`} className="previewInput" value={previewValue(row, "investment_country")} onChange={e => updatePreviewRow(row, "investment_country", e.target.value)} /></td>
                     <td>{row.location_status}</td>
-                    <td>{row.acquisition_date || "-"}</td>
-                    <td>{row.lot_number || "-"}</td>
-                    <td className="num">{number(row.units)}</td>
-                    <td className="num">{money(row.per_unit_cost_basis, row.currency)}</td>
-                    <td className="num">{money(row.total_cost_basis, row.currency)}</td>
-                    <td className="num">{money(row.per_unit_fmv, row.currency)}</td>
-                    <td className="num">{money(row.total_fmv, row.currency)}</td>
-                    <td>{row.currency}</td>
+                    <td><input aria-label={`CSV row ${row.row_number} Acquisition Date`} className="previewInput" type="date" value={previewValue(row, "acquisition_date")} onChange={e => updatePreviewRow(row, "acquisition_date", e.target.value)} /></td>
+                    <td><input aria-label={`CSV row ${row.row_number} Lot Number`} className="previewInput" value={previewValue(row, "lot_number")} onChange={e => updatePreviewRow(row, "lot_number", e.target.value)} /></td>
+                    <td className="num"><input aria-label={`CSV row ${row.row_number} Units`} className="previewInput numeric" type="number" step="any" value={previewValue(row, "units")} onChange={e => updatePreviewRow(row, "units", e.target.value)} /></td>
+                    <td className="num"><input aria-label={`CSV row ${row.row_number} Per Unit Cost Basis`} className="previewInput numeric" type="number" step="any" value={previewValue(row, "per_unit_cost_basis")} onChange={e => updatePreviewRow(row, "per_unit_cost_basis", e.target.value)} /></td>
+                    <td className="num"><input aria-label={`CSV row ${row.row_number} Total Cost Basis`} className="previewInput numeric" type="number" step="any" value={previewValue(row, "total_cost_basis")} onChange={e => updatePreviewRow(row, "total_cost_basis", e.target.value)} /></td>
+                    <td className="num"><input aria-label={`CSV row ${row.row_number} Per Unit FMV`} className="previewInput numeric" type="number" step="any" value={previewValue(row, "per_unit_fmv")} onChange={e => updatePreviewRow(row, "per_unit_fmv", e.target.value)} /></td>
+                    <td className="num"><input aria-label={`CSV row ${row.row_number} Total FMV`} className="previewInput numeric" type="number" step="any" value={previewValue(row, "total_fmv")} onChange={e => updatePreviewRow(row, "total_fmv", e.target.value)} /></td>
+                    <td><input aria-label={`CSV row ${row.row_number} Currency`} className="previewInput currency" value={previewValue(row, "currency")} onChange={e => updatePreviewRow(row, "currency", e.target.value)} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -2304,11 +2421,12 @@ function StaticAccountTable({
 }) {
   const total = accounts.reduce((sum, account) => sum + account.amount_display, 0);
   const displayCurrency = accounts[0]?.display_currency || "USD";
+  const { filtered, control: filters } = useTableColumnFilters(accounts, [{label:"Entity",value:a=>a.entity_name},{label:"Type",value:a=>a.account_type},{label:"Holder",value:a=>a.account_holder},{label:"Currency",value:a=>a.currency}]);
   return (
     <section className="panel">
       <div className="panelHeader">
         <h2>{title}</h2>
-        <strong>{money(total, displayCurrency)}</strong>
+        <div className="tableTools">{filters}<strong>{money(total, displayCurrency)}</strong></div>
       </div>
       <div className="tableWrap">
         <table>
@@ -2325,7 +2443,7 @@ function StaticAccountTable({
             </tr>
           </thead>
           <tbody>
-            {accounts.map((account) => (
+            {filtered.map((account) => (
               <tr key={account.id}>
                 <td>{account.entity_name}</td>
                 <td>{account.account_type}</td>
@@ -2353,6 +2471,47 @@ function StaticAccountTable({
   );
 }
 
+const liabilityTypes = ["Short-term Loan", "Long-term Loan", "Auto Loan", "Home Loan", "Education Loan", "Personal Loan", "Credit Card", "Other"];
+const emptyLiability: LiabilityPayload = { entity_name: "", liability_type: "Home Loan", custom_type: "", account_reference: "", remove_account_reference: false, outstanding_balance: 0, currency: "USD", notes: "" };
+
+function LiabilitiesPage({ liabilities, currency, onChanged }: { liabilities: Liability[]; currency: CurrencySetting | null; onChanged: (message: string) => Promise<void> }) {
+  const [form, setForm] = useState<LiabilityPayload>(emptyLiability);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [hasReference, setHasReference] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const supported = currency?.supported_currencies || supportedCurrencies;
+  const total = liabilities.reduce((sum, liability) => sum + liability.outstanding_balance_display, 0);
+  const displayCurrency = currency?.display_currency || liabilities[0]?.display_currency || "USD";
+  async function save(event: React.FormEvent) {
+    event.preventDefault(); setError(null);
+    try {
+      if (editingId) await api.updateLiability(editingId, form); else await api.createLiability(form);
+      setEditingId(null); setHasReference(false); setForm({ ...emptyLiability, currency: currency?.display_currency || "USD" });
+      await onChanged(editingId ? "Liability updated." : "Liability added.");
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save liability."); }
+  }
+  function edit(liability: Liability) {
+    setEditingId(liability.id);
+    setHasReference(Boolean(liability.account_reference_mask));
+    setForm({ entity_name: liability.entity_name, liability_type: liability.liability_type, custom_type: liability.custom_type || "", account_reference: "", remove_account_reference: false, outstanding_balance: liability.outstanding_balance, currency: liability.currency, notes: liability.notes || "" });
+  }
+  async function remove(id: number) {
+    try { await api.deleteLiability(id); await onChanged("Liability deleted."); }
+    catch (err) { setError(err instanceof Error ? err.message : "Could not delete liability."); }
+  }
+  return <section className="stack"><div className="panel"><h2>{editingId ? "Edit Liability" : "Add Liability"}</h2><form className="assetForm" onSubmit={save}>
+    <label><span>Entity / lender</span><input required value={form.entity_name} onChange={e => setForm({...form, entity_name:e.target.value})}/></label>
+    <label>Liability type<select value={form.liability_type} onChange={e => setForm({...form, liability_type:e.target.value, custom_type:e.target.value === "Other" ? form.custom_type : ""})}>{liabilityTypes.map(type => <option key={type}>{type}</option>)}</select></label>
+    {form.liability_type === "Other" && <label>Custom type<input required value={form.custom_type || ""} onChange={e => setForm({...form, custom_type:e.target.value})}/></label>}
+    <label>Outstanding balance<input required min="0" type="number" step="0.01" value={form.outstanding_balance} onChange={e => setForm({...form, outstanding_balance:Number(e.target.value)})}/></label>
+    <label>Currency<select value={form.currency} onChange={e => setForm({...form, currency:e.target.value})}>{supported.map(item => <option key={item}>{item}</option>)}</select></label>
+    <label>Account reference (optional)<input placeholder={editingId ? "Leave blank to retain existing reference" : "Optional loan/account number"} value={form.account_reference || ""} onChange={e => { setHasReference(Boolean(e.target.value)); setForm({...form, account_reference:e.target.value, remove_account_reference:false}); }}/>{editingId && hasReference && <button className="secondary" type="button" onClick={() => { setHasReference(false); setForm({...form, account_reference:"", remove_account_reference:true}); }}>Remove reference</button>}</label>
+    <label className="wideField">Notes<textarea value={form.notes || ""} onChange={e => setForm({...form, notes:e.target.value})}/></label>
+    <div className="buttonRow left wideField"><button><Save size={16}/>{editingId ? "Update" : "Add"}</button>{editingId && <button className="secondary" type="button" onClick={() => { setEditingId(null); setHasReference(false); setForm(emptyLiability); }}><X size={16}/>Cancel</button>}</div>
+  </form>{error && <div className="error">{error}</div>}</div>
+  <section className="panel"><div className="panelHeader"><h2>Liabilities</h2><strong>{money(total, displayCurrency)}</strong></div><div className="tableWrap"><table><thead><tr><th>Entity / lender</th><th>Type</th><th>Reference</th><th>Currency</th><th className="num">Outstanding balance</th><th>Notes</th><th></th></tr></thead><tbody>{liabilities.map(item => <tr key={item.id}><td>{item.entity_name}</td><td>{item.custom_type || item.liability_type}</td><td>{item.account_reference_mask || "-"}</td><td>{item.currency}</td><td className="num">{money(item.outstanding_balance, item.currency)}</td><td>{item.notes || "-"}</td><td><div className="rowActions"><button className="iconOnly" title="Edit" onClick={() => edit(item)}><Pencil size={15}/></button><button className="iconOnly" title="Delete" onClick={() => remove(item.id)}><Trash2 size={15}/></button></div></td></tr>)}</tbody></table></div></section></section>;
+}
+
 const emptyRealEstate: RealEstatePayload = {
   property_info: "",
   entity_name: "",
@@ -2377,13 +2536,14 @@ function RealEstatePage({
   const [sort, setSort] = useState<SortState<RealEstateAsset>>({ key: "property_info", direction: "asc" });
   const [error, setError] = useState<string | null>(null);
   const supported = currency?.supported_currencies || ["USD", "INR", "GBP", "EUR"];
+  const { filtered: filteredAssets, control: filters } = useTableColumnFilters(assets, [{label:"Property",value:a=>a.property_info},{label:"Entity",value:a=>a.entity_name},{label:"Currency",value:a=>a.currency}]);
   const sorted = useMemo(
     () =>
-      [...assets].sort((left, right) => {
+      [...filteredAssets].sort((left, right) => {
         const result = compareValues(left[sort.key as keyof RealEstateAsset], right[sort.key as keyof RealEstateAsset]);
         return sort.direction === "asc" ? result : -result;
       }),
-    [assets, sort]
+    [filteredAssets, sort]
   );
   const total = assets.reduce((sum, asset) => sum + asset.current_value_display, 0);
   const displayCurrency = assets[0]?.display_currency || currency?.display_currency || "USD";
@@ -2479,7 +2639,7 @@ function RealEstatePage({
       <section className="panel">
         <div className="panelHeader">
           <h2>Properties</h2>
-          <strong>{money(total, displayCurrency)}</strong>
+          <div className="tableTools">{filters}<strong>{money(total, displayCurrency)}</strong></div>
         </div>
         <div className="tableWrap">
           <table>
@@ -2528,10 +2688,10 @@ function RealEstatePage({
 function PrivateEquityPage({assets,currency,onChanged}:{assets:PrivateEquityAsset[];currency:CurrencySetting|null;onChanged:(message:string)=>Promise<void>}) {
   const blank:PrivateEquityPayload={company_name:"",stage:"Seed",share_class:"Preferred",quantity:0,purchase_price_per_unit:0,investment_date:"",last_valuation_per_unit:0,valuation_date:"",ownership_percent:null,valuation_source:"",currency:currency?.display_currency||"USD",notes:""};
   const [form,setForm]=useState<PrivateEquityPayload>(blank); const [editing,setEditing]=useState<number|null>(null); const [error,setError]=useState<string|null>(null);
-  const total=assets.reduce((sum,a)=>sum+a.current_value_display,0); const display=assets[0]?.display_currency||currency?.display_currency||"USD";
+  const total=assets.reduce((sum,a)=>sum+a.current_value_display,0); const display=assets[0]?.display_currency||currency?.display_currency||"USD"; const {filtered,control:filters}=useTableColumnFilters(assets,[{label:"Company",value:a=>a.company_name},{label:"Stage",value:a=>a.stage},{label:"Class",value:a=>a.share_class},{label:"Currency",value:a=>a.currency}]);
   async function save(e:React.FormEvent){e.preventDefault();try{if(editing)await api.updatePrivateEquity(editing,form);else await api.createPrivateEquity(form);await onChanged(editing?"Private equity valuation updated.":"Private equity investment added.");setEditing(null);setForm(blank);}catch(err){setError(err instanceof Error?err.message:"Could not save private equity.");}}
   function edit(a:PrivateEquityAsset){setEditing(a.id);setForm({company_name:a.company_name,stage:a.stage,share_class:a.share_class,quantity:a.quantity,purchase_price_per_unit:a.purchase_price_per_unit,investment_date:a.investment_date||"",last_valuation_per_unit:a.last_valuation_per_unit,valuation_date:a.valuation_date||"",ownership_percent:a.ownership_percent??null,valuation_source:a.valuation_source||"",currency:a.currency,notes:a.notes||""});}
-  return <section className="stack"><section className="panel"><p className="eyebrow">No automated pricing or market-risk refresh</p><h2>{editing?"Update private equity":"Add private equity"}</h2><form className="assetForm" onSubmit={save}><label><span>Company</span><input required value={form.company_name} onChange={e=>setForm({...form,company_name:e.target.value})}/></label><label>Stage<select value={form.stage} onChange={e=>setForm({...form,stage:e.target.value})}>{["Pre-seed","Seed","Series A","Series B","Series C+","Growth","Secondary","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Share class<select value={form.share_class} onChange={e=>setForm({...form,share_class:e.target.value as "Common"|"Preferred"})}><option>Common</option><option>Preferred</option></select></label><label>Quantity<input required type="number" min="0" step="any" value={form.quantity} onChange={e=>setForm({...form,quantity:Number(e.target.value)})}/></label><label>Purchase price / unit<input required type="number" min="0" step="any" value={form.purchase_price_per_unit} onChange={e=>setForm({...form,purchase_price_per_unit:Number(e.target.value)})}/></label><label>Investment date<input type="date" value={form.investment_date||""} onChange={e=>setForm({...form,investment_date:e.target.value})}/></label><label>Last valuation / unit<input required type="number" min="0" step="any" value={form.last_valuation_per_unit} onChange={e=>setForm({...form,last_valuation_per_unit:Number(e.target.value)})}/></label><label>Valuation date<input type="date" value={form.valuation_date||""} onChange={e=>setForm({...form,valuation_date:e.target.value})}/></label><label>Ownership %<input type="number" min="0" max="100" step="any" value={form.ownership_percent??""} onChange={e=>setForm({...form,ownership_percent:e.target.value===""?null:Number(e.target.value)})}/></label><label>Valuation source<input value={form.valuation_source||""} onChange={e=>setForm({...form,valuation_source:e.target.value})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{(currency?.supported_currencies||supportedCurrencies).map(x=><option key={x}>{x}</option>)}</select></label><label className="wideField">Notes<textarea value={form.notes||""} onChange={e=>setForm({...form,notes:e.target.value})}/></label><div className="buttonRow left wideField"><button><Save size={16}/>{editing?"Update valuation":"Add"}</button>{editing&&<button type="button" className="secondary" onClick={()=>{setEditing(null);setForm(blank)}}>Cancel</button>}</div></form>{error&&<div className="error">{error}</div>}</section><section className="panel"><div className="panelHeader"><h2>Restricted, non-marketable holdings</h2><strong>{money(total,display)}</strong></div><div className="tableWrap"><table><thead><tr><th>Company</th><th>Stage</th><th>Class</th><th>Current value</th><th>Gain / loss</th><th>Valuation date</th><th>Source</th><th></th></tr></thead><tbody>{assets.map(a=><tr key={a.id}><td>{a.company_name}</td><td>{a.stage}</td><td>{a.share_class}</td><td>{money(a.current_value,a.currency)}</td><td>{money(a.unrealized_gain_loss,a.currency)}</td><td>{a.valuation_date||"-"}</td><td>{a.valuation_source||"-"}</td><td><button className="iconOnly" onClick={()=>edit(a)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deletePrivateEquity(a.id);await onChanged("Private equity investment deleted.")}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
+  return <section className="stack"><section className="panel"><p className="eyebrow">No automated pricing or market-risk refresh</p><h2>{editing?"Update private equity":"Add private equity"}</h2><form className="assetForm" onSubmit={save}><label><span>Company</span><input required value={form.company_name} onChange={e=>setForm({...form,company_name:e.target.value})}/></label><label>Stage<select value={form.stage} onChange={e=>setForm({...form,stage:e.target.value})}>{["Pre-seed","Seed","Series A","Series B","Series C+","Growth","Secondary","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Share class<select value={form.share_class} onChange={e=>setForm({...form,share_class:e.target.value as "Common"|"Preferred"})}><option>Common</option><option>Preferred</option></select></label><label>Quantity<input required type="number" min="0" step="any" value={form.quantity} onChange={e=>setForm({...form,quantity:Number(e.target.value)})}/></label><label>Purchase price / unit<input required type="number" min="0" step="any" value={form.purchase_price_per_unit} onChange={e=>setForm({...form,purchase_price_per_unit:Number(e.target.value)})}/></label><label>Investment date<input type="date" value={form.investment_date||""} onChange={e=>setForm({...form,investment_date:e.target.value})}/></label><label>Last valuation / unit<input required type="number" min="0" step="any" value={form.last_valuation_per_unit} onChange={e=>setForm({...form,last_valuation_per_unit:Number(e.target.value)})}/></label><label>Valuation date<input type="date" value={form.valuation_date||""} onChange={e=>setForm({...form,valuation_date:e.target.value})}/></label><label>Ownership %<input type="number" min="0" max="100" step="any" value={form.ownership_percent??""} onChange={e=>setForm({...form,ownership_percent:e.target.value===""?null:Number(e.target.value)})}/></label><label>Valuation source<input value={form.valuation_source||""} onChange={e=>setForm({...form,valuation_source:e.target.value})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{(currency?.supported_currencies||supportedCurrencies).map(x=><option key={x}>{x}</option>)}</select></label><label className="wideField">Notes<textarea value={form.notes||""} onChange={e=>setForm({...form,notes:e.target.value})}/></label><div className="buttonRow left wideField"><button><Save size={16}/>{editing?"Update valuation":"Add"}</button>{editing&&<button type="button" className="secondary" onClick={()=>{setEditing(null);setForm(blank)}}>Cancel</button>}</div></form>{error&&<div className="error">{error}</div>}</section><section className="panel"><div className="panelHeader"><h2>Restricted, non-marketable holdings</h2><div className="tableTools">{filters}<strong>{money(total,display)}</strong></div></div><div className="tableWrap"><table><thead><tr><th>Company</th><th>Stage</th><th>Class</th><th>Current value</th><th>Gain / loss</th><th>Valuation date</th><th>Source</th><th></th></tr></thead><tbody>{filtered.map(a=><tr key={a.id}><td>{a.company_name}</td><td>{a.stage}</td><td>{a.share_class}</td><td>{money(a.current_value,a.currency)}</td><td>{money(a.unrealized_gain_loss,a.currency)}</td><td>{a.valuation_date||"-"}</td><td>{a.valuation_source||"-"}</td><td><button className="iconOnly" onClick={()=>edit(a)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deletePrivateEquity(a.id);await onChanged("Private equity investment deleted.")}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 
 export function InsightsPage({ insights, findings, onNavigate = () => {} }: { insights: Insights; findings?: InsightFinding[]; onNavigate?: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
@@ -2563,7 +2723,9 @@ function AllocationPolicyBullets({ rows }: { rows: Insights["allocation_drift"][
   </div>;
 }
 
-export function ProjectionGuidancePage({ insights }: { insights: Insights }) {
+export function ProjectionGuidancePage({ insights, calculationInProgress = false }: { insights: Insights | null; calculationInProgress?: boolean }) {
+  if (calculationInProgress) return <section className="stack"><div className="notice">Projection calculations are in progress. Your saved expenses and assumptions are shown below.</div></section>;
+  if (!insights) return null;
   const c=insights.display_currency, forecast=insights.forecast;
   if (insights.projection_setup_required || !forecast || !forecast.series || forecast.end_age == null) return <section className="stack"><div className="notice">Set Expenses & Projections assumptions in Planning, including your current and end ages, to enable lifetime guidance.</div></section>;
   return <section className="stack"><section className="panel"><h2>Projection guidance</h2><p>10,000 simulated monthly paths through age {forecast.end_age}. Drag across the chart to inspect a period, or use its zoom controls.</p><div className="metricGrid"><MetricCard label="Cash runway" value={insights.cash_runway_months == null ? "Set expenses" : `${insights.cash_runway_months.toFixed(1)} months`} /><MetricCard label="Median at end age" value={money(forecast.monte_carlo_terminal.p50,c)} /></div><div className="chart"><ZoomableProjectionChart data={forecast.series} currency={c} /></div></section></section>;
@@ -2726,11 +2888,12 @@ function StressResults({result}:{result:StressTestResult}){const c=result.displa
 export function GoalsPage({ summary, currency, onChanged }: { summary: GoalsSummary; currency: CurrencySetting; onChanged: () => Promise<void> }) {
   const blank = (): GoalPayload => ({name:"",description:"",target_amount:0,target_currency:currency.display_currency,target_month:"",allocated_amount:0,allocated_currency:currency.display_currency,monthly_contribution:0,contribution_currency:currency.display_currency,priority:null});
   const [form, setForm] = useState<GoalPayload | null>(null); const [editing, setEditing] = useState<number | null>(null); const [error,setError]=useState<string|null>(null);
+  const {filtered:filteredGoals,control:filters}=useTableColumnFilters(summary.goals,[{label:"Goal",value:g=>g.name},{label:"Target month",value:g=>g.target_month},{label:"Target currency",value:g=>g.target_currency}]);
   const edit = (goal?: GoalsSummary["goals"][number]) => { setEditing(goal?.id ?? null); setForm(goal ? {name:goal.name,description:goal.description,target_amount:goal.target_amount,target_currency:goal.target_currency,target_month:goal.target_month,allocated_amount:goal.allocated_amount,allocated_currency:goal.allocated_currency,monthly_contribution:goal.monthly_contribution,contribution_currency:goal.contribution_currency,priority:goal.priority} : blank()); };
   async function save() { if (!form) return; try { setError(null); editing ? await api.updateGoal(editing,form) : await api.createGoal(form); setForm(null); await onChanged(); } catch(e) {setError(e instanceof Error?e.message:"Could not save goal.");} }
   return <section className="stack"><div className="metricGrid"><MetricCard label="Investable financial assets" value={money(summary.investable_financial_assets,summary.display_currency)} /><MetricCard label="Allocated to goals" value={money(summary.total_allocated,summary.display_currency)} /><MetricCard label="Unallocated remainder" value={money(summary.unallocated_remainder,summary.display_currency)} /></div>{summary.over_allocated && <div className="error">Goal allocations exceed investable financial assets. This is a warning only; allocations are not blocked.</div>}<div className="panelHeader"><h2>Goals</h2><button className="primaryButton" onClick={() => edit()}><Target size={16}/> Add goal</button></div>
   {form && <section className="panel"><h2>{editing ? "Edit goal" : "New goal"}</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Target month<input type="month" value={form.target_month} onChange={e=>setForm({...form,target_month:e.target.value})}/></label><label>Target amount at target date<input type="number" value={form.target_amount} onChange={e=>setForm({...form,target_amount:Number(e.target.value)})}/><small>Enter the amount needed at the target date; it is already inflation-adjusted.</small></label><label>Target currency<CurrencyInput value={form.target_currency} onChange={v=>setForm({...form,target_currency:v})} currencies={currency.supported_currencies}/></label><label>Manual allocation<input type="number" value={form.allocated_amount} onChange={e=>setForm({...form,allocated_amount:Number(e.target.value)})}/></label><label>Allocation currency<CurrencyInput value={form.allocated_currency} onChange={v=>setForm({...form,allocated_currency:v})} currencies={currency.supported_currencies}/></label><label>Monthly contribution<input type="number" value={form.monthly_contribution} onChange={e=>setForm({...form,monthly_contribution:Number(e.target.value)})}/></label><label>Contribution currency<CurrencyInput value={form.contribution_currency} onChange={v=>setForm({...form,contribution_currency:v})} currencies={currency.supported_currencies}/></label><label>Priority<input type="number" value={form.priority ?? ""} onChange={e=>setForm({...form,priority:e.target.value ? Number(e.target.value) : null})}/></label><label>Description<input value={form.description ?? ""} onChange={e=>setForm({...form,description:e.target.value})}/></label></div><div className="buttonRow left"><button className="primaryButton" onClick={save}>Save goal</button><button className="secondary" onClick={()=>setForm(null)}>Cancel</button></div>{error&&<div className="error">{error}</div>}</section>}
-  <GoalFundingChart goals={summary.goals} currency={summary.display_currency}/><section className="panel"><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Target</th><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{summary.goals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td className={g.projected_shortfall_surplus == null || g.projected_shortfall_surplus === 0 ? undefined : g.projected_shortfall_surplus > 0 ? "good" : "bad"}>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
+  <GoalFundingChart goals={summary.goals} currency={summary.display_currency}/><section className="panel"><div className="tableTools">{filters}</div><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Target</th><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{filteredGoals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td className={g.projected_shortfall_surplus == null || g.projected_shortfall_surplus === 0 ? undefined : g.projected_shortfall_surplus > 0 ? "good" : "bad"}>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 function CurrencyInput({value,onChange,currencies}:{value:string;onChange:(v:string)=>void;currencies:string[]}) { return <select value={value} onChange={e=>onChange(e.target.value)}>{currencies.map(c=><option key={c}>{c}</option>)}</select>; }
 
@@ -2835,7 +2998,7 @@ export function BrokerSettings({ brokers, onChanged }: { brokers: Broker[]; onCh
     <div className="buttonRow left"><button className="secondary" disabled={!sampleCsv || busy} onClick={runPreview}><RefreshCw size={16}/> Preview configuration</button><button className="primaryButton brokerCommitButton" disabled={busy} onClick={save}><Save size={16}/> Save broker</button></div>{error && <div className="error">{error}</div>}{preview && <><div className={preview.valid ? "notice" : "errorList"}>{preview.valid ? `${preview.rows.length} normalized security rows are valid.` : preview.errors.map(item => <div key={item}>{item}</div>)}</div><p className="disclosure">Showing the first 25 normalized rows. Each column shows canonical field ← CSV column.</p><div className="tableWrap"><table><thead><tr><th>Row</th>{Object.entries(preview.mappings).map(([field, column]) => <th key={field}>{fieldLabels[field] || field}<br/><small>← {column}</small></th>)}</tr></thead><tbody>{preview.rows.slice(0,25).map(row=><tr key={row.row_number}><td>{row.row_number}</td>{Object.keys(preview.mappings).map(field => <td key={field}>{String((row as unknown as Record<string, unknown>)[field] ?? "—")}</td>)}</tr>)}</tbody></table></div>{preview.invalid_rows.length>0&&<div className="errorList">{preview.invalid_rows.map(row=><div key={row.row_number}>Row {row.row_number}: {Object.values(row.field_errors).flat().join(" ")}</div>)}</div>}</>}</section></section>;
 }
 
-export function ProjectionSettings({ insights, assumptions, scheduledExpenses, currency, onChanged }: { insights: Insights; assumptions: FinancialAssumptions | null; scheduledExpenses: ScheduledExpense[]; currency: string; onChanged: () => Promise<void> }) {
+export function ProjectionSettings({ insights, calculationInProgress = false, assumptions, scheduledExpenses, currency, onChanged }: { insights: Insights | null; calculationInProgress?: boolean; assumptions: FinancialAssumptions | null; scheduledExpenses: ScheduledExpense[]; currency: string; onChanged: () => Promise<void> }) {
   const [form, setForm] = useState<FinancialAssumptions>(assumptions || {});
   const blankExpense = (): ScheduledExpenseInput => ({name:"",expense_type:"one_time",amount:0,currency,expense_date:"",start_date:"",end_date:""});
   const [expense, setExpense] = useState<ScheduledExpenseInput>(blankExpense()); const [editingExpense, setEditingExpense] = useState<number|null>(null);
@@ -2849,7 +3012,7 @@ export function ProjectionSettings({ insights, assumptions, scheduledExpenses, c
   ];
   async function saveExpense() { try { setError(null); if(editingExpense) await api.updateScheduledExpense(editingExpense, expense); else await api.createScheduledExpense(expense); setExpense(blankExpense()); setEditingExpense(null); await onChanged(); } catch(e) { setError(e instanceof Error ? e.message : "Could not save scheduled expense."); } }
   function edit(item: ScheduledExpense) { setEditingExpense(item.id); setExpense({...item}); }
-  return <section className="stack"><ProjectionGuidancePage insights={insights}/><section className="panel"><h2>Expenses & Projections</h2><p>Lifetime projections use all financial assets, recurring spending, and the scheduled expenses below. Values are assumptions, not advice.</p>
+  return <section className="stack"><ProjectionGuidancePage insights={insights} calculationInProgress={calculationInProgress}/><section className="panel"><h2>Expenses & Projections</h2><p>Lifetime projections use all financial assets, recurring spending, and the scheduled expenses below. Values are assumptions, not advice.</p>
     <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{kind === "amount" ? `${label} (${currency})` : label}<input type="number" min="0" step={kind === "years" ? "1" : "0.01"} value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
     <div className="buttonRow left"><button className="primaryButton" onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}</section>
     <section className="panel"><div className="panelHeader"><h2>{editingExpense ? "Edit scheduled expense" : "Scheduled expenses"}</h2></div><div className="formGrid"><label>Name<input value={expense.name} onChange={e=>setExpense({...expense,name:e.target.value})}/></label><label>Type<select value={expense.expense_type} onChange={e=>setExpense({...expense,expense_type:e.target.value as ScheduledExpenseInput["expense_type"]})}><option value="one_time">One-time dated expense</option><option value="date_range">Date-range total</option></select></label><label>Amount<input type="number" min="0" value={expense.amount} onChange={e=>setExpense({...expense,amount:Number(e.target.value)})}/></label><label>Currency<CurrencyInput value={expense.currency} onChange={value=>setExpense({...expense,currency:value})} currencies={supportedCurrencies}/></label>{expense.expense_type==="one_time"?<label>Date<input type="date" value={expense.expense_date||""} onChange={e=>setExpense({...expense,expense_date:e.target.value})}/></label>:<><label>Start date<input type="date" value={expense.start_date||""} onChange={e=>setExpense({...expense,start_date:e.target.value})}/></label><label>End date<input type="date" value={expense.end_date||""} onChange={e=>setExpense({...expense,end_date:e.target.value})}/></label></>}</div><div className="buttonRow left"><button onClick={saveExpense}><Save size={16}/>{editingExpense?"Update expense":"Add expense"}</button>{editingExpense&&<button className="secondary" onClick={()=>{setEditingExpense(null);setExpense(blankExpense());}}>Cancel</button>}</div><p className="disclosure">Date-range amounts are totals in today’s money, spread evenly across the inclusive months and inflated in the projection.</p><div className="tableWrap"><table><thead><tr><th>Name</th><th>Schedule</th><th>Amount</th><th></th></tr></thead><tbody>{scheduledExpenses.map(item=><tr key={item.id}><td>{item.name}</td><td>{item.expense_type === "one_time" ? item.expense_date : `${item.start_date} – ${item.end_date}`}</td><td>{money(item.amount,item.currency)}</td><td><button className="iconOnly" onClick={()=>edit(item)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deleteScheduledExpense(item.id);await onChanged();}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
@@ -3024,7 +3187,7 @@ function DatabaseTools({ onCleaned, onReset }: { onCleaned: (message: string) =>
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const options: Array<{
-    scope: "brokerage" | "static" | "real-estate" | "private-equity" | "all";
+    scope: "brokerage" | "static" | "real-estate" | "private-equity" | "liabilities" | "all";
     title: string;
     description: string;
     phrase: string;
@@ -3054,6 +3217,12 @@ function DatabaseTools({ onCleaned, onReset }: { onCleaned: (message: string) =>
       phrase: "CLEAR PRIVATE EQUITY"
     },
     {
+      scope: "liabilities",
+      title: "Clear Liabilities",
+      description: "Deletes all tracked loans, credit cards, and other liabilities.",
+      phrase: "CLEAR LIABILITIES"
+    },
+    {
       scope: "all",
       title: "Clear All Data",
       description: "Deletes every saved item, including brokers, FX rates, display/settings data, and the encryption password. You will need to set up the app again.",
@@ -3061,7 +3230,7 @@ function DatabaseTools({ onCleaned, onReset }: { onCleaned: (message: string) =>
     }
   ];
 
-  async function cleanDatabase(scope: "brokerage" | "static" | "real-estate" | "private-equity" | "all") {
+  async function cleanDatabase(scope: "brokerage" | "static" | "real-estate" | "private-equity" | "liabilities" | "all") {
     setBusy(true);
     setError(null);
     try {

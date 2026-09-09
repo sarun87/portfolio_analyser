@@ -5,8 +5,21 @@ from backend.app.services.repositories import fingerprint_account, get_or_create
 
 FIELDS = ["security_name", "symbol", "security_type", "allocation_category", "sector", "exchange", "investment_country", "acquisition_date", "lot_number", "units", "per_unit_cost_basis", "total_cost_basis", "per_unit_fmv", "total_fmv", "currency"]
 
-def _key(account_id, symbol, lot, acquisition_date):
-    return (account_id, (symbol or "").strip().upper(), (lot or "").strip(), sanitize_acquisition_date(acquisition_date) or "")
+def _key(account_id, symbol, lot, acquisition_date, per_unit_cost_basis):
+    """Return the stable identity of a holding row within an account.
+
+    Many brokers do not provide a tax-lot identifier.  For those statements,
+    acquisition date and cost per unit distinguish otherwise identical lots.
+    ``None`` remains a distinct, supported value for statements without cost
+    information; it must not be replaced with zero.
+    """
+    return (
+        account_id,
+        (symbol or "").strip().upper(),
+        (lot or "").strip(),
+        sanitize_acquisition_date(acquisition_date) or "",
+        per_unit_cost_basis,
+    )
 def _row_values(row): return {field: getattr(row, field) for field in FIELDS}
 
 def _current_rows(conn, broker_id, account_ids):
@@ -15,7 +28,7 @@ def _current_rows(conn, broker_id, account_ids):
     rows = conn.execute(f"""SELECT p.*, s.name security_name, s.symbol, s.security_type, s.allocation_category, s.sector, s.exchange, s.investment_country
       FROM positions p JOIN securities s ON s.id=p.security_id
       WHERE p.account_id IN ({marks}) AND p.snapshot_date=(SELECT MAX(q.snapshot_date) FROM positions q WHERE q.account_id=p.account_id)""", account_ids).fetchall()
-    return {_key(r["account_id"], r["symbol"], r["lot_number"], r["acquisition_date"]): r for r in rows}
+    return {_key(r["account_id"], r["symbol"], r["lot_number"], r["acquisition_date"], r["per_unit_cost_basis"]): r for r in rows}
 
 def _reconcile(conn, preview: ImportPreview):
     broker = get_broker(conn, preview.broker_id)
@@ -27,11 +40,11 @@ def _reconcile(conn, preview: ImportPreview):
     incoming = {}
     for row in preview.rows:
         account_id = accounts[row.account_number or "UNKNOWN"]
-        if account_id: incoming[_key(account_id, row.symbol, row.lot_number, row.acquisition_date)] = row
+        if account_id: incoming[_key(account_id, row.symbol, row.lot_number, row.acquisition_date, row.per_unit_cost_basis)] = row
     new, modified = [], []
     for row in preview.rows:
         account_id = accounts[row.account_number or "UNKNOWN"]
-        existing = current.get(_key(account_id, row.symbol, row.lot_number, row.acquisition_date)) if account_id else None
+        existing = current.get(_key(account_id, row.symbol, row.lot_number, row.acquisition_date, row.per_unit_cost_basis)) if account_id else None
         if not existing: new.append(row); continue
         proposed = _row_values(row); old = {field: existing[field] for field in FIELDS}
         changed = [field for field in FIELDS if old[field] != proposed[field]]
@@ -40,6 +53,8 @@ def _reconcile(conn, preview: ImportPreview):
     deleted = []
     for key, existing in current.items():
         account_name = next((name for name, ident in accounts.items() if ident == key[0]), "UNKNOWN")
+        # Ignored rows may be invalid before a cost basis can be derived, so
+        # their preservation key intentionally excludes the new cost element.
         if key not in incoming and (account_name, key[1], key[2], key[3]) not in ignored:
             values = {field: existing[field] for field in FIELDS}; deleted.append(ImportReconciliationRow(current_values=values, proposed_values={}, changed_fields=[]))
     preview.new_rows, preview.modified_rows, preview.deleted_rows = new, modified, deleted
@@ -74,7 +89,7 @@ def commit_statement(conn, request: ImportCommitRequest) -> ImportResult:
     import_id = insert_import(conn, broker_id=request.broker_id, account_id=first, statement_date=preview.statement_date, source_filename=request.filename, row_count=len(preview.rows), fingerprint=preview.fingerprint, detected_columns=preview.detected_columns, errors=[], locked_fields=preview.locked_fields)
     changed_keys = set()
     for row in preview.rows:
-        account_id = accounts[row.account_number or "UNKNOWN"]; key = _key(account_id, row.symbol, row.lot_number, row.acquisition_date); existing = current.get(key)
+        account_id = accounts[row.account_number or "UNKNOWN"]; key = _key(account_id, row.symbol, row.lot_number, row.acquisition_date, row.per_unit_cost_basis); existing = current.get(key)
         security_id = get_or_create_security(conn, name=row.security_name, security_type=row.security_type, symbol=row.symbol, exchange=row.exchange, investment_country=row.investment_country, location_source=row.location_status)
         from backend.app.services.allocation_category_service import register_category
         register_category(conn, row.allocation_category)
@@ -88,6 +103,8 @@ def commit_statement(conn, request: ImportCommitRequest) -> ImportResult:
     ignored = {(item.raw_values.get("account_number") or "UNKNOWN", (item.raw_values.get("symbol") or "").strip().upper(), (item.raw_values.get("lot_number") or "").strip(), sanitize_acquisition_date(item.raw_values.get("acquisition_date")) or "") for item in preview.ignored_rows}
     for key, existing in current.items():
         account_name = next((name for name, ident in accounts.items() if ident == key[0]), "UNKNOWN")
+        # See the matching comment in _reconcile: ignored invalid rows do not
+        # necessarily have a usable per-unit cost basis.
         if key not in changed_keys and (account_name, key[1], key[2], key[3]) not in ignored:
             conn.execute("DELETE FROM positions WHERE id=?", (existing["id"],)); deleted += 1
     return ImportResult(import_id=import_id, imported_rows=len(preview.rows), duplicate=False, added_rows=len(preview.new_rows), modified_rows=len(preview.modified_rows), deleted_rows=deleted)

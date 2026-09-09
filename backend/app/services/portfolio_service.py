@@ -488,7 +488,10 @@ def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
     private_equity_value = sum(convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0 for row in conn.execute(
         "SELECT currency, SUM(quantity * last_valuation_per_unit) AS value FROM private_equity_assets GROUP BY currency"
     ))
-    total_net_worth = brokerage_value + static_accounts_value + real_estate_value + private_equity_value
+    total_assets = brokerage_value + static_accounts_value + real_estate_value + private_equity_value
+    liability_rows = conn.execute("SELECT currency, SUM(outstanding_balance) AS value FROM liabilities GROUP BY currency").fetchall()
+    total_liabilities = sum(convert_amount(conn, row["value"] or 0, row["currency"], display_currency) or 0 for row in liability_rows)
+    total_net_worth = total_assets - total_liabilities
 
     net_worth_allocation = [AnalyticsPoint(label="Brokerage", value=brokerage_value)]
     for label in ["Bank Account", "Retirement Account", "Other"]:
@@ -502,6 +505,8 @@ def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
         static_accounts_value=static_accounts_value,
         real_estate_value=real_estate_value,
         private_equity_value=private_equity_value,
+        total_assets=total_assets,
+        total_liabilities=total_liabilities,
         total_net_worth=total_net_worth,
         total_value=total_net_worth,
         total_cost_basis=total_cost,

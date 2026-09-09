@@ -272,9 +272,14 @@ def clean_private_equity_data(conn: sqlite3.Connection) -> None:
     _delete_tables(conn, ["private_equity_assets"])
 
 
+def clean_liability_data(conn: sqlite3.Connection) -> None:
+    _delete_tables(conn, ["liabilities"])
+
+
 def clean_portfolio_data(conn: sqlite3.Connection) -> None:
     clean_brokerage_data(conn)
     clean_static_account_data(conn)
     clean_real_estate_data(conn)
     clean_private_equity_data(conn)
+    clean_liability_data(conn)
     _delete_tables(conn, ["portfolio_fees", "risk_settings", "fee_settings"])

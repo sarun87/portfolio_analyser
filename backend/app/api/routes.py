@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
+from io import BytesIO
 from typing import Optional
 
 from backend.app.core.config import AUTH_CONFIG_PATH, SESSION_COOKIE_SECURE, TRUSTED_ORIGINS
@@ -17,6 +19,7 @@ from backend.app.services.asset_service import (
     create_static_account,
     delete_real_estate_asset,
     create_private_equity_asset, delete_private_equity_asset, list_private_equity_assets, update_private_equity_asset,
+    create_liability, delete_liability, list_liabilities, update_liability,
     delete_static_account,
     list_real_estate_assets,
     list_static_accounts,
@@ -35,6 +38,7 @@ from backend.app.services.models import (
     CleanDatabaseResult,
     ClassificationRefreshResult,
     CurrencySetting,
+    ReportBranding, ReportBrandingUpdate, ReportRequest,
     DashboardAnalytics,
     FxRate,
     FxRateUpdate,
@@ -55,6 +59,7 @@ from backend.app.services.models import (
     StaticAccount,
     StaticAccountCreate,
     StaticAccountUpdate,
+    Liability, LiabilityCreate, LiabilityUpdate,
     UnlockRequest,
     FinancialAssumptions,
     AllocationTarget,
@@ -92,6 +97,7 @@ from backend.app.services.repositories import (
     clean_portfolio_data,
     clean_real_estate_data,
     clean_private_equity_data,
+    clean_liability_data,
     clean_static_account_data,
     get_brokers,
 )
@@ -115,6 +121,7 @@ from backend.app.services.fee_service import (
     list_security_fees, save_fee_settings, save_portfolio_fee, save_security_fee,
 )
 from backend.app.services.analytics_cache import analytics_cache
+from backend.app.services.report_service import generate_report, get_branding, save_branding
 
 
 SESSION_COOKIE_NAME = "portfolio_session"
@@ -375,6 +382,32 @@ def pl() -> list[Position]:
 def analytics_dashboard() -> DashboardAnalytics:
     with get_connection() as conn:
         return analytics_cache.get("dashboard", database_manager.revision, lambda: dashboard(conn))
+
+
+@router.get("/report-branding", response_model=ReportBranding)
+def report_branding() -> ReportBranding:
+    with get_connection() as conn:
+        return get_branding(conn)
+
+
+@router.put("/report-branding", response_model=ReportBranding)
+def update_report_branding(payload: ReportBrandingUpdate) -> ReportBranding:
+    with get_connection() as conn:
+        try:
+            return save_branding(conn, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/reports/generate")
+def download_report(payload: ReportRequest):
+    with get_connection() as conn:
+        try:
+            pdf = generate_report(conn, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    filename = f"net-worth-{payload.report_type.lower()}-report.pdf"
+    return StreamingResponse(BytesIO(pdf), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/insights", response_model=Insights)
@@ -792,6 +825,7 @@ def clean_database_scope(scope: str, response: Response) -> CleanDatabaseResult:
         "static": (clean_static_account_data, "Static banking data cleared."),
         "real-estate": (clean_real_estate_data, "Real estate data cleared."),
         "private-equity": (clean_private_equity_data, "Private equity data cleared."),
+        "liabilities": (clean_liability_data, "Liabilities data cleared."),
     }
     if normalized == "all":
         return reset_application(response)
@@ -946,4 +980,38 @@ def remove_private_equity_asset(asset_id: int) -> dict[str, bool]:
     with get_connection() as conn:
         try: delete_private_equity_asset(conn, asset_id)
         except ValueError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": True}
+
+
+@router.get("/liabilities", response_model=list[Liability])
+def liabilities() -> list[Liability]:
+    with get_connection() as conn:
+        return list_liabilities(conn)
+
+
+@router.post("/liabilities", response_model=Liability)
+def add_liability(payload: LiabilityCreate) -> Liability:
+    with get_connection() as conn:
+        try:
+            return create_liability(conn, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/liabilities/{liability_id}", response_model=Liability)
+def edit_liability(liability_id: int, payload: LiabilityUpdate) -> Liability:
+    with get_connection() as conn:
+        try:
+            return update_liability(conn, liability_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 400, detail=str(exc)) from exc
+
+
+@router.delete("/liabilities/{liability_id}")
+def remove_liability(liability_id: int) -> dict[str, bool]:
+    with get_connection() as conn:
+        try:
+            delete_liability(conn, liability_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True}
