@@ -107,9 +107,14 @@ def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefresh
             refreshed=False,
             message="Security has no refreshable symbol.",
         )
+    return apply_quote_result(conn, fetch_security_quote(security_id, row["symbol"], row["exchange"]))
+
+
+def fetch_security_quote(security_id: int, symbol: str, exchange: Optional[str]) -> PriceRefreshResult:
+    """Fetch a quote without touching SQLite; safe to call from worker threads."""
     yahoo_errors = []
     price = None
-    for candidate in yahoo_candidates(row["symbol"], row["exchange"]):
+    for candidate in yahoo_candidates(symbol, exchange):
         try:
             price = fetch_yahoo_price(candidate)
             provider = PROVIDER
@@ -118,7 +123,7 @@ def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefresh
             yahoo_errors.append(f"{candidate}: {exc}")
     if price is None:
         google_errors = []
-        for candidate in google_candidates(row["symbol"], row["exchange"]):
+        for candidate in google_candidates(symbol, exchange):
             try:
                 price = fetch_google_finance_price(candidate)
                 provider = GOOGLE_PROVIDER
@@ -127,28 +132,33 @@ def refresh_security(conn: sqlite3.Connection, security_id: int) -> PriceRefresh
                 google_errors.append(f"{candidate}: {exc}")
     if price is None:
         return PriceRefreshResult(
-            security_id=security_id,
-            symbol=row["symbol"],
+            security_id=security_id, symbol=symbol,
             refreshed=False,
             message=f"Yahoo: {'; '.join(yahoo_errors)} Google Finance: {'; '.join(google_errors)}",
         )
 
     if not math.isfinite(price) or price <= 0:
         return PriceRefreshResult(
-            security_id=security_id,
-            symbol=row["symbol"],
+            security_id=security_id, symbol=symbol,
             refreshed=False,
             message="Quote response included an invalid price; the stored price was not changed.",
         )
-
-    record_price(conn, security_id, price, provider, date.today().isoformat())
     return PriceRefreshResult(
-        security_id=security_id,
-        symbol=row["symbol"],
+        security_id=security_id, symbol=symbol,
         refreshed=True,
         price=price,
-        message="Price refreshed.",
+        message=provider,
     )
+
+
+def apply_quote_result(conn: sqlite3.Connection, result: PriceRefreshResult) -> PriceRefreshResult:
+    """Persist a successfully fetched quote using the caller's short transaction."""
+    if not result.refreshed or result.price is None:
+        return result
+    # Provider is kept in the fetch result message until it is persisted.
+    provider = result.message if result.message in {PROVIDER, GOOGLE_PROVIDER} else PROVIDER
+    record_price(conn, result.security_id, result.price, provider, date.today().isoformat())
+    return result.model_copy(update={"message": "Price refreshed."})
 
 
 def refresh_all(conn: sqlite3.Connection) -> list[PriceRefreshResult]:

@@ -12,7 +12,7 @@ import type {
   Position,
   PositionCreatePayload,
   PositionUpdatePayload,
-  PriceRefreshResult,
+  PriceRefreshResult, PriceRefreshJobStatus,
   RealEstateAsset,
   RealEstatePayload,
   PrivateEquityAsset, PrivateEquityPayload,
@@ -186,6 +186,10 @@ export const api = {
   refreshSecurity: (securityId: number) =>
     request<PriceRefreshResult>(`/api/prices/refresh/${securityId}`, { method: "POST" }),
   refreshAll: () => request<PriceRefreshResult[]>("/api/prices/refresh-all", { method: "POST" }),
+  startPriceRefreshJob: () => request<PriceRefreshJobStatus>("/api/prices/refresh-jobs", { method: "POST" }),
+  priceRefreshJob: (jobId: string) => request<PriceRefreshJobStatus>(`/api/prices/refresh-jobs/${jobId}`),
+  activePriceRefreshJob: () => request<PriceRefreshJobStatus | null>("/api/prices/refresh-jobs/active"),
+  cancelPriceRefreshJob: (jobId: string) => request<PriceRefreshJobStatus>(`/api/prices/refresh-jobs/${jobId}/cancel`, { method: "POST" }),
   classifySecurity: (securityId: number) =>
     request<ClassificationRefreshResult>(`/api/securities/classify/${securityId}`, { method: "POST" }),
   classifyAll: () => request<ClassificationRefreshResult[]>("/api/securities/classify-all", { method: "POST" }),

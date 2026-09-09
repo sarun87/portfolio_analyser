@@ -1,9 +1,11 @@
 import sqlite3
+from io import BytesIO
 from types import SimpleNamespace
 
+from reportlab.pdfgen import canvas
 from backend.app.db.schema import init_db
 from backend.app.services.models import ReportRequest
-from backend.app.services.report_service import _component_rows, generate_report
+from backend.app.services.report_service import _component_rows, _table, generate_report
 
 
 def _connection():
@@ -47,3 +49,14 @@ def test_summary_is_one_page_and_detail_includes_summary_before_appendix():
     # the holdings appendix page even when there are no recorded holdings.
     assert summary.count(b"/Type /Page") == 2
     assert detail.count(b"/Type /Page") == 3
+
+
+def test_detail_table_paginates_with_branding_footer_without_header_argument_error():
+    output = BytesIO()
+    pdf = canvas.Canvas(output)
+    _, page = _table(
+        pdf, ["Column"], [[str(index)] for index in range(100)], 700, 1, "USD", None, "2026-01-01",
+        ("Test report", None, None, None),
+    )
+    pdf.save()
+    assert page > 1

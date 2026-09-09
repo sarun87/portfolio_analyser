@@ -50,7 +50,7 @@ from backend.app.services.models import (
     PositionBulkUpdateItem,
     PositionCreate,
     PositionUpdate,
-    PriceRefreshResult,
+    PriceRefreshResult, PriceRefreshJobStatus,
     RealEstateAsset,
     RealEstateAssetCreate,
     RealEstateAssetUpdate,
@@ -84,6 +84,7 @@ from backend.app.services.models import (
 from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
 from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
 from backend.app.services.price_service import refresh_all, refresh_security
+from backend.app.services.price_refresh_jobs import price_refresh_jobs
 from backend.app.services.fx_service import (
     SUPPORTED_CURRENCIES,
     get_display_currency,
@@ -216,6 +217,9 @@ def unlock_auth(request: UnlockRequest, response: Response) -> AuthStatus:
 
 @router.post("/auth/lock", response_model=AuthStatus)
 def lock_auth(response: Response) -> AuthStatus:
+    # Cancellation precedes closing the encrypted connection.  The job manager
+    # serializes this with its short write commits, preventing lock-race writes.
+    price_refresh_jobs.cancel()
     database_manager.lock()
     key_manager.lock()
     salt, verifier = load_encryption_config()
@@ -800,7 +804,37 @@ def refresh_prices() -> list[PriceRefreshResult]:
         return refresh_all(conn)
 
 
+@router.post("/prices/refresh-jobs", response_model=PriceRefreshJobStatus)
+def start_price_refresh_job() -> PriceRefreshJobStatus:
+    try:
+        return price_refresh_jobs.start()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/prices/refresh-jobs/active", response_model=Optional[PriceRefreshJobStatus])
+def active_price_refresh_job() -> Optional[PriceRefreshJobStatus]:
+    return price_refresh_jobs.active()
+
+
+@router.get("/prices/refresh-jobs/{job_id}", response_model=PriceRefreshJobStatus)
+def get_price_refresh_job(job_id: str) -> PriceRefreshJobStatus:
+    job = price_refresh_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Price refresh job not found.")
+    return job
+
+
+@router.post("/prices/refresh-jobs/{job_id}/cancel", response_model=PriceRefreshJobStatus)
+def cancel_price_refresh_job(job_id: str) -> PriceRefreshJobStatus:
+    job = price_refresh_jobs.cancel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Price refresh job not found.")
+    return job
+
+
 def reset_application(response: Response) -> CleanDatabaseResult:
+    price_refresh_jobs.cancel()
     database_manager.discard()
     AUTH_CONFIG_PATH.unlink(missing_ok=True)
     key_manager.lock()

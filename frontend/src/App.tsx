@@ -78,7 +78,7 @@ import type {
   Insights, InsightFinding
   , SavedScenario, ScenarioInput, ScenarioAnalysis, StressTestInput, StressTestResult,
   ExposureAnalysis, FundCompositionInput, FundConstituent, PublicMetadataPreview, FundMetadata, PeerResearch,
-  RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput, ReportBrandingPayload, Liability, LiabilityPayload
+  RiskAnalysis, RiskSettings, FeeAnalysis, SecurityFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput, ReportBrandingPayload, Liability, LiabilityPayload, PriceRefreshJobStatus
 } from "./lib/types";
 
 type View = "overview" | "assets" | "liabilities" | "portfolio" | "analytics" | "planning" | "upload" | "settings";
@@ -546,6 +546,7 @@ export function App() {
   const [positionStructuredFilter, setPositionStructuredFilter] = useState<PositionFilters>({});
   const [tableCurrencyMode, setTableCurrencyMode] = useSessionValue<TableCurrencyMode>("portfolio-table-currency-mode", "position", ["display", "position"]);
   const [busy, setBusy] = useState(false);
+  const [priceRefreshJob, setPriceRefreshJob] = useState<PriceRefreshJobStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const stored = window.localStorage.getItem("portfolio-theme");
@@ -625,8 +626,39 @@ export function App() {
   useEffect(() => {
     if (auth?.unlocked) {
       loadCoreData().catch((error) => setMessage(error.message));
+      api.activePriceRefreshJob().then((job) => {
+        setPriceRefreshJob(job);
+        if (!job) window.localStorage.removeItem("portfolio-price-refresh-job");
+      }).catch(() => setPriceRefreshJob(null));
     }
   }, [auth?.unlocked]);
+
+  useEffect(() => {
+    if (!auth?.unlocked || !priceRefreshJob || !["queued", "running"].includes(priceRefreshJob.status)) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const next = await api.priceRefreshJob(priceRefreshJob.job_id);
+        if (!active) return;
+        setPriceRefreshJob(next);
+        if (["completed", "cancelled", "failed"].includes(next.status)) {
+          window.localStorage.removeItem("portfolio-price-refresh-job");
+          if (next.status === "completed") {
+            await loadData();
+            if (!active) return;
+            setMessage(`Refreshed ${next.succeeded} of ${next.total} securities.${next.failed ? ` ${next.failed} failed.` : ""}`);
+          } else if (next.status === "failed") {
+            setMessage(`Price refresh stopped after ${next.completed} of ${next.total} securities. ${next.failed || 1} failed.`);
+          }
+        }
+      } catch (error) {
+        if (active) setMessage(error instanceof Error ? error.message : "Could not check price refresh progress.");
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [auth?.unlocked, priceRefreshJob?.job_id, priceRefreshJob?.status]);
 
   useEffect(() => {
     if (auth?.unlocked && view === "analytics" && ["insights", "what-changed", "allocation-policy"].includes(analyticsSection)) {
@@ -696,17 +728,13 @@ export function App() {
   }, [auth?.unlocked, view]);
 
   async function refreshAllPrices() {
-    setBusy(true);
     setMessage(null);
     try {
-      const result = await api.refreshAll();
-      const refreshed = result.filter((item) => item.refreshed).length;
-      setMessage(`Refreshed ${refreshed} of ${result.length} securities.`);
-      await loadData();
+      const job = await api.startPriceRefreshJob();
+      setPriceRefreshJob(job);
+      window.localStorage.setItem("portfolio-price-refresh-job", job.job_id);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Price refresh failed.");
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -795,7 +823,7 @@ export function App() {
                 </select>
               </label>
             )}
-            <button className="secondary" disabled={busy} onClick={refreshAllPrices}>
+            <button className="secondary" disabled={busy || !!priceRefreshJob && ["queued", "running"].includes(priceRefreshJob.status)} onClick={refreshAllPrices}>
               <RefreshCw size={16} />
               Refresh Prices
             </button>
@@ -810,7 +838,13 @@ export function App() {
               className="iconOnly"
               title="Lock portfolio"
               onClick={async () => {
+                if (priceRefreshJob && ["queued", "running"].includes(priceRefreshJob.status)) {
+                  setMessage("Cancelling price refresh and locking portfolio.");
+                  try { await api.cancelPriceRefreshJob(priceRefreshJob.job_id); } catch { /* Lock still cancels server-side. */ }
+                }
                 const next = await api.lock();
+                setPriceRefreshJob(null);
+                window.localStorage.removeItem("portfolio-price-refresh-job");
                 setAuth(next);
               }}
             >
@@ -820,6 +854,18 @@ export function App() {
         </header>
 
         {message && <div className="notice">{message}</div>}
+        {priceRefreshJob && ["queued", "running"].includes(priceRefreshJob.status) && (
+          <div className="priceRefreshIndicator" role="status">
+            Refreshing prices {priceRefreshJob.completed}/{priceRefreshJob.total} · {priceRefreshJob.succeeded} succeeded · {priceRefreshJob.failed} failed
+            {priceRefreshJob.current_symbols.length ? ` · ${priceRefreshJob.current_symbols.join(", ")}` : ""}
+          </div>
+        )}
+        {priceRefreshJob && ["completed", "failed"].includes(priceRefreshJob.status) && priceRefreshJob.failed > 0 && (
+          <details className="priceRefreshFailures">
+            <summary>{priceRefreshJob.failed} price refresh failure{priceRefreshJob.failed === 1 ? "" : "s"}</summary>
+            <ul>{priceRefreshJob.results.filter(item => !item.refreshed).map(item => <li key={item.security_id}>{item.symbol || "Unknown security"}: {item.message}</li>)}</ul>
+          </details>
+        )}
 
         {view === "overview" && analytics && (
           <Overview

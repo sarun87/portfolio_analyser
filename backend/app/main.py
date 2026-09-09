@@ -10,6 +10,7 @@ from backend.app.core.config import FRONTEND_DIST, TRUSTED_ORIGINS, ensure_data_
 from backend.app.core.encryption import key_manager
 from backend.app.core.external_api_logging import setup_external_api_logging
 from backend.app.db.database import database_manager
+from backend.app.services.price_refresh_jobs import price_refresh_jobs
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        price_refresh_jobs.shutdown()
         database_manager.lock()
         key_manager.lock()
 

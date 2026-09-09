@@ -178,6 +178,18 @@ export type PriceRefreshResult = {
   message: string;
 };
 
+export type PriceRefreshJobStatus = {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "cancelled" | "failed";
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  current_symbols: string[];
+  results: PriceRefreshResult[];
+};
+
 export type ClassificationRefreshResult = {
   security_id: number;
   symbol?: string | null;
