@@ -12,12 +12,14 @@ from backend.app.services.models import (
     StaticAccount,
     StaticAccountCreate,
     StaticAccountUpdate,
+    Liability, LiabilityCreate, LiabilityUpdate,
 )
 from backend.app.services.repositories import fingerprint_account, mask_account
 
 
 STATIC_ACCOUNT_CATEGORIES = {"Bank Account", "Retirement Account", "Other"}
 PRIVATE_EQUITY_STAGES = {"Pre-seed", "Seed", "Series A", "Series B", "Series C+", "Growth", "Secondary", "Other"}
+LIABILITY_TYPES = {"Short-term Loan", "Long-term Loan", "Auto Loan", "Home Loan", "Education Loan", "Personal Loan", "Credit Card", "Other"}
 
 
 def _validate_currency(currency: str) -> str:
@@ -149,6 +151,52 @@ def delete_static_account(conn: sqlite3.Connection, account_id: int) -> None:
     cursor = conn.execute("DELETE FROM static_accounts WHERE id = ?", (account_id,))
     if cursor.rowcount == 0:
         raise ValueError("Static account not found.")
+
+
+def _liability_from_row(conn: sqlite3.Connection, row) -> Liability:
+    display = get_display_currency(conn)
+    return Liability(id=row["id"], entity_name=row["entity_name"], liability_type=row["liability_type"], custom_type=row["custom_type"], account_reference_mask=row["account_reference_mask"], outstanding_balance=row["outstanding_balance"], currency=row["currency"], outstanding_balance_display=convert_amount(conn, row["outstanding_balance"], row["currency"], display) or 0, display_currency=display, notes=row["notes"], created_at=row["created_at"], updated_at=row["updated_at"])
+
+
+def _validate_liability(payload: LiabilityCreate | LiabilityUpdate) -> tuple[str, str | None, str]:
+    liability_type = payload.liability_type.strip()
+    if liability_type not in LIABILITY_TYPES:
+        raise ValueError("Select a supported liability type.")
+    custom_type = payload.custom_type.strip() if payload.custom_type else None
+    if liability_type == "Other" and not custom_type:
+        raise ValueError("Specify a custom liability type when using Other.")
+    return liability_type, custom_type if liability_type == "Other" else None, _validate_currency(payload.currency)
+
+
+def list_liabilities(conn: sqlite3.Connection) -> list[Liability]:
+    return [_liability_from_row(conn, row) for row in conn.execute("SELECT * FROM liabilities ORDER BY liability_type, entity_name")]
+
+
+def get_liability(conn: sqlite3.Connection, liability_id: int) -> Liability:
+    row = conn.execute("SELECT * FROM liabilities WHERE id=?", (liability_id,)).fetchone()
+    if not row: raise ValueError("Liability not found.")
+    return _liability_from_row(conn, row)
+
+
+def create_liability(conn: sqlite3.Connection, payload: LiabilityCreate) -> Liability:
+    liability_type, custom_type, currency = _validate_liability(payload); reference = payload.account_reference.strip() if payload.account_reference else None
+    cursor = conn.execute("""INSERT INTO liabilities(entity_name, liability_type, custom_type, account_reference_enc, account_reference_mask, outstanding_balance, currency, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (payload.entity_name.strip(), liability_type, custom_type, key_manager.encrypt(reference) if reference else None, mask_account(reference) if reference else None, payload.outstanding_balance, currency, payload.notes))
+    return get_liability(conn, int(cursor.lastrowid))
+
+
+def update_liability(conn: sqlite3.Connection, liability_id: int, payload: LiabilityUpdate) -> Liability:
+    liability_type, custom_type, currency = _validate_liability(payload); reference = payload.account_reference.strip() if payload.account_reference else None
+    existing = conn.execute("SELECT account_reference_enc, account_reference_mask FROM liabilities WHERE id=?", (liability_id,)).fetchone()
+    if not existing: raise ValueError("Liability not found.")
+    encrypted_reference = None if payload.remove_account_reference else key_manager.encrypt(reference) if reference else existing["account_reference_enc"]
+    reference_mask = None if payload.remove_account_reference else mask_account(reference) if reference else existing["account_reference_mask"]
+    cursor = conn.execute("""UPDATE liabilities SET entity_name=?, liability_type=?, custom_type=?, account_reference_enc=?, account_reference_mask=?, outstanding_balance=?, currency=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""", (payload.entity_name.strip(), liability_type, custom_type, encrypted_reference, reference_mask, payload.outstanding_balance, currency, payload.notes, liability_id))
+    if cursor.rowcount == 0: raise ValueError("Liability not found.")
+    return get_liability(conn, liability_id)
+
+
+def delete_liability(conn: sqlite3.Connection, liability_id: int) -> None:
+    if conn.execute("DELETE FROM liabilities WHERE id=?", (liability_id,)).rowcount == 0: raise ValueError("Liability not found.")
 
 
 def _real_estate_from_row(conn: sqlite3.Connection, row) -> RealEstateAsset:

@@ -151,6 +151,9 @@ export type DashboardAnalytics = {
   brokerage_value: number;
   static_accounts_value: number;
   real_estate_value: number;
+  private_equity_value?: number;
+  total_assets?: number;
+  total_liabilities?: number;
   total_net_worth: number;
   total_value: number;
   total_cost_basis: number;
@@ -188,6 +191,21 @@ export type CurrencySetting = {
   supported_currencies: string[];
 };
 
+export type ReportBranding = {
+  title: string;
+  subtitle?: string | null;
+  footer?: string | null;
+  has_logo: boolean;
+};
+
+export type ReportBrandingPayload = {
+  title: string;
+  subtitle?: string | null;
+  footer?: string | null;
+  logo_data_base64?: string | null;
+  remove_logo?: boolean;
+};
+
 export type FxRate = {
   from_currency: string;
   to_currency: string;
@@ -220,6 +238,32 @@ export type StaticAccountPayload = {
   account_number?: string | null;
   currency: string;
   amount: number;
+  notes?: string | null;
+};
+
+export type Liability = {
+  id: number;
+  entity_name: string;
+  liability_type: string;
+  custom_type?: string | null;
+  account_reference_mask?: string | null;
+  outstanding_balance: number;
+  outstanding_balance_display: number;
+  currency: string;
+  display_currency: string;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LiabilityPayload = {
+  entity_name: string;
+  liability_type: string;
+  custom_type?: string | null;
+  account_reference?: string | null;
+  remove_account_reference?: boolean;
+  outstanding_balance: number;
+  currency: string;
   notes?: string | null;
 };
 

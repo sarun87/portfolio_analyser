@@ -21,7 +21,7 @@ def broker_for(conn, csv_text: str, *, name="Configured broker", locks=None):
         "account_number": "Account", "symbol": "Symbol", "security_name": "Name", "security_type": "Type",
         "units": "Units", "total_cost_basis": "Cost", "per_unit_cost_basis": "Cost Per Unit",
         "total_fmv": "Value", "per_unit_fmv": "Price", "currency": "Currency", "exchange": "Exchange",
-        "investment_country": "Country", "allocation_category": "Allocation", "sector": "Sector", "lot_number": "Lot",
+        "investment_country": "Country", "allocation_category": "Allocation", "sector": "Sector", "lot_number": "Lot", "acquisition_date": "Purchase Date",
     }
     mapping = {field: column for field, column in mapping.items() if column in headers}
     draft = BrokerDraft(name=name, default_currency="USD", locked_fields=locks or [], header_signature=headers, mappings=mapping)
@@ -69,6 +69,24 @@ def test_configured_import_is_duplicate_safe_and_derives_values(sqlite_conn):
     assert commit_statement(sqlite_conn, request).duplicate
     position = list_positions(sqlite_conn)[0]
     assert (position.total_cost_basis, position.total_fmv) == (1500, 2200)
+
+
+def test_import_distinguishes_same_security_lots_by_acquisition_date_and_cost_basis(sqlite_conn):
+    init_db(sqlite_conn); unlock()
+    first = """Account,Symbol,Name,Type,Units,Cost,Value,Currency,Exchange,Country,Allocation,Sector,Purchase Date
+A-1,AAPL,Apple,Stock,10,1000,2000,USD,NASDAQ,United States,Large Cap,Technology,2024-01-15
+A-1,AAPL,Apple,Stock,10,1500,2000,USD,NASDAQ,United States,Large Cap,Technology,2024-01-15
+"""
+    broker = broker_for(sqlite_conn, first)
+    commit_statement(sqlite_conn, request_for(sqlite_conn, broker, first, "2026-06-30"))
+
+    second = first.replace(",10,1000,2000,", ",11,1100,2200,").replace(",10,1500,2000,", ",12,1800,2400,")
+    preview = preview_statement(sqlite_conn, ImportPreviewRequest(broker_id=broker["id"], csv_text=second, statement_date="2026-07-31"))
+    assert (len(preview.new_rows), len(preview.modified_rows), len(preview.deleted_rows)) == (0, 2, 0)
+    commit_statement(sqlite_conn, ImportCommitRequest(broker_id=broker["id"], csv_text=second, statement_date="2026-07-31", expected_configuration_version=preview.configuration_version))
+
+    current = sorted(list_positions(sqlite_conn), key=lambda position: position.per_unit_cost_basis or 0)
+    assert [(position.units, position.per_unit_cost_basis) for position in current] == [(11, 100), (12, 150)]
 
 
 def test_import_locks_preserve_prior_lot_values_without_changing_broker_defaults(sqlite_conn):

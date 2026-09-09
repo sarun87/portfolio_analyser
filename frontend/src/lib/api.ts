@@ -5,6 +5,7 @@ import type {
   BrokerDraft,
   ClassificationRefreshResult,
   CurrencySetting,
+  ReportBranding, ReportBrandingPayload,
   DashboardAnalytics,
   FxRate,
   ImportPreview,
@@ -17,6 +18,7 @@ import type {
   PrivateEquityAsset, PrivateEquityPayload,
   StaticAccount,
   StaticAccountPayload
+  , Liability, LiabilityPayload
   , FinancialAssumptions, AllocationTarget, Goal, GoalPayload, GoalsSummary, Insights, InsightFinding, SnapshotComparison,
   ScenarioInput, SavedScenario, ScenarioAnalysis, StressTestInput, StressTestResult,
   ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch,
@@ -50,6 +52,17 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   return response.json() as Promise<T>;
+}
+
+async function download(url: string, payload: unknown): Promise<Blob> {
+  const token = csrfToken();
+  const response = await fetch(url, { method: "POST", headers: { ...jsonHeaders, ...(token ? { "X-CSRF-Token": token } : {}) }, credentials: "same-origin", body: JSON.stringify(payload) });
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).detail || message; } catch { /* retain status */ }
+    throw new Error(message);
+  }
+  return response.blob();
 }
 
 export const api = {
@@ -119,6 +132,9 @@ export const api = {
   deletePosition: (id: number) => request<{ deleted: boolean }>(`/api/positions/${id}`, { method: "DELETE" }),
   profitLoss: () => request<Position[]>("/api/profit-loss"),
   dashboard: () => request<DashboardAnalytics>("/api/analytics/dashboard"),
+  reportBranding: () => request<ReportBranding>("/api/report-branding"),
+  saveReportBranding: (payload: ReportBrandingPayload) => request<ReportBranding>("/api/report-branding", { method: "PUT", headers: jsonHeaders, body: JSON.stringify(payload) }),
+  generateReport: (payload: ReportBrandingPayload & { report_type: "summary" | "detail" }) => download("/api/reports/generate", payload),
   insights: () => request<Insights>("/api/insights"),
   projectionInsights: () => request<Insights>("/api/insights/projection"),
   reviewInbox: () => request<InsightFinding[]>("/api/review-inbox"),
@@ -215,11 +231,15 @@ export const api = {
   createPrivateEquity: (payload:PrivateEquityPayload) => request<PrivateEquityAsset>("/api/private-equity",{method:"POST",headers:jsonHeaders,body:JSON.stringify(payload)}),
   updatePrivateEquity: (id:number,payload:PrivateEquityPayload) => request<PrivateEquityAsset>(`/api/private-equity/${id}`,{method:"PUT",headers:jsonHeaders,body:JSON.stringify(payload)}),
   deletePrivateEquity: (id:number) => request<{deleted:boolean}>(`/api/private-equity/${id}`,{method:"DELETE"}),
+  liabilities: () => request<Liability[]>("/api/liabilities"),
+  createLiability: (payload: LiabilityPayload) => request<Liability>("/api/liabilities", { method:"POST", headers:jsonHeaders, body:JSON.stringify(payload) }),
+  updateLiability: (id: number, payload: LiabilityPayload) => request<Liability>(`/api/liabilities/${id}`, { method:"PUT", headers:jsonHeaders, body:JSON.stringify(payload) }),
+  deleteLiability: (id: number) => request<{deleted:boolean}>(`/api/liabilities/${id}`, { method:"DELETE"}),
   cleanDatabase: () =>
     request<{ cleaned: boolean; message: string; reset: boolean }>("/api/database/clean", {
       method: "POST"
     }),
-  cleanDatabaseScope: (scope: "brokerage" | "static" | "real-estate" | "private-equity" | "all") =>
+  cleanDatabaseScope: (scope: "brokerage" | "static" | "real-estate" | "private-equity" | "liabilities" | "all") =>
     request<{ cleaned: boolean; message: string; reset: boolean }>(`/api/database/clean/${scope}`, {
       method: "POST"
     })

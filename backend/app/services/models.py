@@ -234,6 +234,25 @@ class CurrencySetting(BaseModel):
     supported_currencies: list[str]
 
 
+class ReportBranding(BaseModel):
+    title: str
+    subtitle: Optional[str] = None
+    footer: Optional[str] = None
+    has_logo: bool = False
+
+
+class ReportBrandingUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    subtitle: Optional[str] = Field(default=None, max_length=240)
+    footer: Optional[str] = Field(default=None, max_length=1000)
+    logo_data_base64: Optional[str] = None
+    remove_logo: bool = False
+
+
+class ReportRequest(ReportBrandingUpdate):
+    report_type: str
+
+
 class FxRate(BaseModel):
     from_currency: str
     to_currency: str
@@ -265,6 +284,34 @@ class StaticAccountCreate(StaticAccountBase):
 
 class StaticAccountUpdate(StaticAccountBase):
     pass
+
+
+class LiabilityBase(BaseModel):
+    entity_name: str = Field(min_length=1, max_length=200)
+    liability_type: str = Field(min_length=1, max_length=80)
+    custom_type: Optional[str] = Field(default=None, max_length=80)
+    account_reference: Optional[str] = Field(default=None, max_length=200)
+    remove_account_reference: bool = False
+    outstanding_balance: float = Field(ge=0)
+    currency: str = "USD"
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class LiabilityCreate(LiabilityBase):
+    pass
+
+
+class LiabilityUpdate(LiabilityBase):
+    pass
+
+
+class Liability(LiabilityBase):
+    id: int
+    account_reference_mask: Optional[str] = None
+    outstanding_balance_display: float
+    display_currency: str
+    created_at: str
+    updated_at: str
 
 
 class StaticAccount(BaseModel):
@@ -344,6 +391,8 @@ class DashboardAnalytics(BaseModel):
     static_accounts_value: float
     real_estate_value: float
     private_equity_value: float = 0
+    total_assets: float = 0
+    total_liabilities: float = 0
     total_net_worth: float
     total_value: float
     total_cost_basis: float
