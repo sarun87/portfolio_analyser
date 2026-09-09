@@ -218,7 +218,7 @@ def _table(pdf, headers: list[str], rows: list[list[str]], y: float, page: int, 
     y = draw_head(y)
     for index, row in enumerate(rows):
         if y < 55:
-            _footer(pdf, page, currency, footer, as_of); pdf.showPage(); page += 1; y = _header(pdf, *branding); y = _section(pdf, "Appendix (continued)", y); y = draw_head(y)
+            _footer(pdf, page, currency, footer, as_of); pdf.showPage(); page += 1; y = _header(pdf, branding[0], branding[1], branding[3]); y = _section(pdf, "Appendix (continued)", y); y = draw_head(y)
         if index % 2 == 0:
             pdf.setFillColor(colors.HexColor("#f8fafc")); pdf.rect(MARGIN, y - 10, sum(widths), 13, fill=1, stroke=0)
         pdf.setFillColor(colors.HexColor("#1f2933")); pdf.setFont("Helvetica", 7)

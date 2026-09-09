@@ -629,6 +629,21 @@ button.dangerButton {
   padding: 12px;
 }
 
+.priceRefreshIndicator {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: #e8f0ff;
+  color: #1f4b99;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.priceRefreshFailures {
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+
 .notice {
   background: #eff6ff;
   border: 1px solid #bfdbfe;

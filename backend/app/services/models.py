@@ -215,6 +215,18 @@ class PriceRefreshResult(BaseModel):
     message: str
 
 
+class PriceRefreshJobStatus(BaseModel):
+    job_id: str
+    status: str
+    total: int
+    completed: int
+    succeeded: int
+    failed: int
+    skipped: int
+    current_symbols: list[str] = Field(default_factory=list)
+    results: list[PriceRefreshResult] = Field(default_factory=list)
+
+
 class CleanDatabaseResult(BaseModel):
     cleaned: bool
     message: str
