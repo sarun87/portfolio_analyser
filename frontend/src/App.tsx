@@ -1341,7 +1341,10 @@ export function PositionsTable({
   const displayedCurrencyLabel = currencyMode === "position" ? "Position currency" : positions[0]?.display_currency || "USD";
 
   useEffect(() => {
-    window.localStorage.setItem(positionColumnsStorageKey, JSON.stringify(visibleColumns));
+    try {
+       window.localStorage.setItem(positionColumnsStorageKey, JSON.stringify(visibleColumns));
+    } catch {
+    }
   }, [visibleColumns]);
 
   const columnVisible = (column: PositionColumn) => visibleColumns.includes(column);
