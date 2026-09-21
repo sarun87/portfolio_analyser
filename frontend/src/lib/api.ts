@@ -21,7 +21,7 @@ import type {
   , Liability, LiabilityPayload
   , FinancialAssumptions, AllocationTarget, Goal, GoalPayload, GoalsSummary, Insights, InsightFinding, SnapshotComparison,
   ScenarioInput, SavedScenario, ScenarioAnalysis, StressTestInput, StressTestResult,
-  ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch,
+  ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch, FundDataSecurity, FundDataRefreshResult,
   HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskSettings,
   FeeAnalysis, FeeSettings, SecurityFee, PortfolioFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput
 } from "./types";
@@ -63,6 +63,17 @@ async function download(url: string, payload: unknown): Promise<Blob> {
     throw new Error(message);
   }
   return response.blob();
+}
+
+async function upload<T>(url: string, form: FormData): Promise<T> {
+  const token = csrfToken();
+  const response = await fetch(url, { method: "POST", headers: token ? { "X-CSRF-Token": token } : undefined, credentials: "same-origin", body: form });
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).detail || message; } catch { /* retain status */ }
+    throw new Error(message);
+  }
+  return response.json() as Promise<T>;
 }
 
 export const api = {
@@ -146,6 +157,8 @@ export const api = {
   analyzeScenario: (payload: ScenarioInput) => request<ScenarioAnalysis>("/api/scenarios/analyze", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   runStressTest: (payload: StressTestInput) => request<StressTestResult>("/api/stress-tests/run", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }),
   lookThrough: () => request<ExposureAnalysis>("/api/look-through"),
+  fundData: () => request<FundDataSecurity[]>("/api/fund-data"),
+  refreshFundData: (security_ids:number[]) => request<FundDataRefreshResult[]>("/api/fund-data/refresh", {method:"POST", headers:jsonHeaders, body:JSON.stringify({security_ids})}),
   saveFundComposition: (id:number,payload:FundCompositionInput) => request<FundComposition>(`/api/fund-compositions/${id}`,{method:"PUT",headers:jsonHeaders,body:JSON.stringify(payload)}),
   previewPublicMetadata: (id:number, payload: { source: "yahoo_html" | "google_finance_html" | "custom_url" | "ishares_csv" | "vanguard_csv"; url?: string } = {source:"yahoo_html"}) => request<PublicMetadataPreview>(`/api/public-metadata/${id}/preview`,{method:"POST",headers:jsonHeaders,body:JSON.stringify(payload)}),
   acceptPublicComposition: (id:number) => request<PublicMetadataAcceptance>(`/api/fund-compositions/${id}/accept-public`,{method:"POST"}),
@@ -246,5 +259,12 @@ export const api = {
   cleanDatabaseScope: (scope: "brokerage" | "static" | "real-estate" | "private-equity" | "liabilities" | "all") =>
     request<{ cleaned: boolean; message: string; reset: boolean }>(`/api/database/clean/${scope}`, {
       method: "POST"
-    })
+    }),
+  exportDatabase: (categories: string[]) => download("/api/database/export", { categories }),
+  importDatabase: (file: File, categories: string[]) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("categories", JSON.stringify(categories));
+    return upload<{ imported: boolean; categories: string[]; record_counts: Record<string, number> }>("/api/database/import", form);
+  }
 };

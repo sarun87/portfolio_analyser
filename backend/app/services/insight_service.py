@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Optional, Union
 
 from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, get_display_currency
+from backend.app.services.company_identity import ALPHABET_LABEL, company_identity
 from backend.app.services.models import (
     AllocationTarget, FinancialAssumptions, Goal, GoalCreate, GoalUpdate, GoalsSummary,
     AllocationPolicySummary, AnalyticsPoint, InsightAllocationRow, InsightFinding, InsightTaxLot, Insights,
@@ -207,13 +208,14 @@ def insights(conn: sqlite3.Connection, *, include_forecast: bool = True) -> Insi
     display, positions, a = get_display_currency(conn), list_positions(conn), get_assumptions(conn)
     values = [(p, p.total_fmv_display or 0) for p in positions]
     total = sum(v for _, v in values)
-    security_totals: dict[int, AnalyticsPoint] = {}
+    security_totals: dict[str, AnalyticsPoint] = {}
     for position, value in values:
-        existing = security_totals.get(position.security_id)
+        key, label = company_identity(position.symbol, position.security_name)
+        existing = security_totals.get(key)
         if existing:
             existing.value += value
         else:
-            security_totals[position.security_id] = AnalyticsPoint(label=position.security_name, value=value)
+            security_totals[key] = AnalyticsPoint(label=label, value=value)
     concentration = sorted(security_totals.values(), key=lambda point: point.value, reverse=True)
     aggregate = lambda key: [AnalyticsPoint(label=k, value=v) for k, v in sorted(_totals(values, key).items())]
     currency, country, exchange = aggregate(lambda p: p.currency), aggregate(lambda p: p.investment_country), aggregate(lambda p: p.exchange)
@@ -303,7 +305,10 @@ def review_findings(conn, positions, total, concentration, drifts, immediate, ru
                     evidence=[f"Current value: {largest.value:,.2f} {display}", f"Portfolio value: {total:,.2f} {display}", "Review threshold: 20%"],
                     explanation="A single holding can dominate portfolio outcomes even when the rest of the portfolio is diversified.",
                     suggested_actions=["Review whether this concentration is intentional.", "Consider directing future contributions toward underweight allocations before considering sales."],
-                    navigation={"page": "positions", "filters": {"security_name": largest.label}}
+                    navigation={"page": "positions", "filters": (
+                        {"any_of": [{"symbol": "GOOG"}, {"symbol": "GOOGL"}]}
+                        if largest.label == ALPHABET_LABEL else {"security_name": largest.label}
+                    )}
                 ))
     for dimension, rows in drifts.items():
         for row in rows:

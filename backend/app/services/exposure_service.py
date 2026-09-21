@@ -22,6 +22,7 @@ from backend.app.services.models import (
 )
 from backend.app.services.portfolio_service import list_positions
 from backend.app.services.insight_service import list_targets
+from backend.app.services.company_identity import ALPHABET_KEY, company_identity
 
 
 PUBLIC_PROVIDER = "html-sync"
@@ -486,6 +487,12 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
         })
         item["value"] += position.total_fmv_display or 0
     compositions = {item.security_id: item for item in list_compositions(conn)}
+    sector_weights: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    try:
+        for row in conn.execute("SELECT fund_security_id, sector, weight_percent FROM fund_sector_weights"):
+            sector_weights[row["fund_security_id"]].append(row)
+    except sqlite3.OperationalError:
+        pass
     total = sum(item["value"] for item in grouped.values())
     funds = [item for item in grouped.values() if "fund" in item["type"].lower() or "etf" in item["type"].lower()]
     held_fund_ids = {item["id"] for item in funds}
@@ -499,13 +506,15 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
             target["confidence"] = confidence
 
     def expand(security_id: int, value: float, path: tuple[int, ...], parent_name: str, fallback: dict,
-               inherited_confidence: str = "high"):
+               inherited_confidence: str = "high", skip_sector: bool = False):
         composition = compositions.get(security_id)
         if not composition or security_id in path or len(path) >= 10:
-            company_key = (fallback.get("symbol") or fallback["name"]).upper()
+            company_key, company_label = company_identity(fallback.get("symbol"), fallback["name"])
             confidence = "low" if not fallback.get("symbol") else inherited_confidence
-            add("company", company_key, fallback["name"], value, confidence, parent_name)
+            add("company", company_key, company_label, value, confidence, parent_name)
             for dim, key in (("sector", "sector"), ("country", "country"), ("currency", "currency"), ("asset_category", "category")):
+                if dim == "sector" and skip_sector:
+                    continue
                 label = fallback.get(key) or ("Unresolved" if dim in ("country", "currency") else "Unclassified")
                 add(dim, label, label, value, confidence, parent_name)
             return
@@ -515,18 +524,27 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
             child_confidence = "low"
         elif inherited_confidence == "medium" and child_confidence == "high":
             child_confidence = "medium"
+        # Provider sector weights describe the whole fund, unlike top holdings.
+        # When an ancestor already supplied sector weights, do not count a
+        # nested composition's sectors a second time.
+        known_sectors = [] if skip_sector else sector_weights.get(security_id, [])
+        for sector in known_sectors:
+            add("sector", sector["sector"], sector["sector"], value * sector["weight_percent"] / 100, child_confidence, parent_name)
         for child in composition.constituents:
             child_value = value * child.weight_percent / 100
             child_data = {"name": child.name, "symbol": child.symbol, "sector": child.sector, "country": child.country,
                           "currency": child.currency, "category": child.asset_category}
             if child.linked_security_id and child.linked_security_id in compositions:
-                expand(child.linked_security_id, child_value, path + (security_id,), parent_name, child_data, child_confidence)
+                expand(child.linked_security_id, child_value, path + (security_id,), parent_name, child_data,
+                       child_confidence, skip_sector or bool(known_sectors))
             else:
-                expand(-1, child_value, (), parent_name, child_data, child_confidence)
+                expand(-1, child_value, (), parent_name, child_data, child_confidence, bool(known_sectors))
         if coverage < 100:
             unknown = value * (100 - coverage) / 100
             add("company", f"unmapped:{security_id}", f"Unmapped: {parent_name}", unknown, "low", parent_name)
             for dim in ("sector", "country", "currency", "asset_category"):
+                if dim == "sector" and known_sectors:
+                    continue
                 add(dim, "Unmapped", "Unmapped", unknown, "low", parent_name)
 
     for item in grouped.values():
@@ -575,8 +593,12 @@ def exposure_analysis(conn: sqlite3.Connection) -> ExposureAnalysis:
                     for key, value in nested.items():
                         result[key] += item.weight_percent * value / 100
                     continue
-            # ISIN/SEDOL/CUSIP is preferred over a ticker: tickers can be reused across markets.
-            result[(item.identifier or item.symbol or item.constituent_key).upper()] += item.weight_percent
+            # ISIN/SEDOL/CUSIP is normally the strongest identity. Alphabet's
+            # two listed classes are the explicit exception: canonicalize them
+            # before identifier preference so GOOG and GOOGL overlap correctly.
+            ticker_key, _ = company_identity(item.symbol or item.constituent_key, item.name)
+            key = ticker_key if ticker_key == ALPHABET_KEY else (item.identifier.upper() if item.identifier else ticker_key)
+            result[key] += item.weight_percent
         in_progress.remove(fund_id)
         flatten_cache[(fund_id, remaining_depth)] = result
         return result
