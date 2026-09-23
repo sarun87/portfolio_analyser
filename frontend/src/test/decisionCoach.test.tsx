@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(), commitImport: vi.fn(), previewBroker: vi.fn(), createBroker: vi.fn(), updateBroker: vi.fn(), deleteBroker: vi.fn(),
-  updatePosition: vi.fn(), updatePositions: vi.fn(),
+  updatePosition: vi.fn(), updatePositions: vi.fn(), refreshSecurity: vi.fn(),
   lookThrough: vi.fn(), fundData: vi.fn(), refreshFundData: vi.fn(), saveFundComposition: vi.fn(), previewPublicMetadata: vi.fn(), acceptPublicComposition: vi.fn(),
   riskAnalysis: vi.fn(), riskSettings: vi.fn(), refreshMarketHistory: vi.fn(), saveRiskSettings: vi.fn(),
   importMarketHistory: vi.fn(), importManualMarketSeries: vi.fn(), feeAnalysis: vi.fn(), securityFees: vi.fn(),
@@ -63,6 +63,7 @@ beforeEach(() => {
   });
   apiMock.updatePosition.mockImplementation((_id, payload) => Promise.resolve({...fund, ...payload}));
   apiMock.updatePositions.mockResolvedValue([]);
+  apiMock.refreshSecurity.mockResolvedValue({security_id:10, refreshed:true, message:"Price refreshed."});
 });
 
 afterEach(cleanup);
@@ -187,14 +188,37 @@ describe("decision coach workspaces", () => {
     const microsoft = {...fund, id:2, security_name:"Microsoft", symbol:"MSFT", broker_name:"Broker A", allocation_category:"Large Cap"};
     const bond = {...fund, id:3, security_name:"Bond", symbol:"BND", broker_name:"Broker B", allocation_category:"Bonds"};
     render(<PositionsTable positions={[apple, microsoft, bond]} brokers={[]} categories={[]} onRefresh={async () => {}} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} />);
-    fireEvent.click(screen.getByText("Filters"));
+    fireEvent.click(screen.getByLabelText("Filter Broker"));
     fireEvent.click(screen.getByRole("checkbox", {name:"Broker A"}));
+    fireEvent.click(screen.getByLabelText("Filter Security"));
     fireEvent.click(screen.getByRole("checkbox", {name:"AAPL"}));
     fireEvent.click(screen.getByRole("checkbox", {name:"MSFT"}));
     expect(screen.getByText("Apple")).toBeInTheDocument();
     expect(screen.getByText("Microsoft")).toBeInTheDocument();
     expect(screen.queryByText("Bond")).not.toBeInTheDocument();
     expect(screen.getByRole("button", {name:/edit mode/i})).toBeEnabled();
+  });
+
+  it("keeps refresh, edit mode, and select-all scoped to header-filtered positions", async () => {
+    const apple = {...fund, security_name:"Apple", symbol:"AAPL", broker_name:"Broker A"};
+    const bond = {...fund, id:2, security_id:20, security_name:"Bond", symbol:"BND", broker_name:"Broker B"};
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    render(<PositionsTable positions={[apple, bond]} brokers={[]} categories={[]} onRefresh={onRefresh} externalFilter="" structuredFilter={{}} onExternalFilterChange={() => {}} onStructuredFilterChange={() => {}} />);
+    fireEvent.click(screen.getByLabelText("Filter Broker"));
+    fireEvent.click(screen.getByRole("checkbox", {name:"Broker A"}));
+    expect(screen.queryByText("Bond")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("Refresh security price"));
+    await waitFor(() => expect(apiMock.refreshSecurity).toHaveBeenCalledWith(10));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", {name:/edit mode/i}));
+    fireEvent.click(screen.getByLabelText("Select all visible positions"));
+    expect(screen.getByLabelText("Select Apple")).toBeChecked();
+    expect(screen.queryByLabelText("Select Bond")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue("1"), {target:{value:"2"}});
+    fireEvent.click(screen.getByTitle("Save position"));
+    await waitFor(() => expect(apiMock.updatePosition).toHaveBeenCalledWith(1, expect.objectContaining({units:2})));
   });
 
   it("keeps edited per-unit and total cost and FMV values in sync", async () => {

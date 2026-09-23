@@ -275,6 +275,15 @@ nav button:hover {
 .columnFilterMenu fieldset { border: 0; border-top: 1px solid #e5e7eb; display: grid; gap: 6px; margin: 0; padding: 10px 0 0; }
 .columnFilterMenu legend { color: #64748b; font-size: 12px; font-weight: 700; padding: 0; text-transform: uppercase; }
 .columnFilterMenu label { font-size: 13px; overflow-wrap: anywhere; }
+.tableHeaderControls { align-items: center; display: inline-flex; gap: 4px; white-space: nowrap; }
+.headerFilter { position: relative; }
+.headerFilter summary { color: #64748b; cursor: pointer; list-style: none; padding: 2px 3px; }
+.headerFilter summary::-webkit-details-marker { display: none; }
+.headerFilter.active summary { color: #2563eb; font-weight: 800; }
+.headerFilter sup { font-size: 10px; margin-left: 2px; }
+.headerFilterMenu { background: #fff; border: 1px solid #d1d5db; border-radius: 8px; box-shadow: 0 12px 30px rgba(15, 23, 42, .15); display: grid; gap: 7px; left: 0; max-height: min(60vh, 440px); min-width: 200px; overflow-y: auto; padding: 10px; position: absolute; text-align: left; top: calc(100% + 6px); z-index: 30; }
+.headerFilterMenu label { align-items: center; display: flex; font-size: 13px; font-weight: 400; gap: 7px; overflow-wrap: anywhere; }
+.headerFilterMenu input { min-height: auto; width: auto; }
 
 .segmented {
   background: #f1f5f9;
@@ -1037,7 +1046,8 @@ button.dangerButton {
 }
 
 [data-theme="dark"] .columnPicker summary,
-[data-theme="dark"] .columnPickerMenu { background: #111827; border-color: #334155; color: #e5e7eb; }
+[data-theme="dark"] .columnPickerMenu,
+[data-theme="dark"] .headerFilterMenu { background: #111827; border-color: #334155; color: #e5e7eb; }
 [data-theme="dark"] .columnFilterMenu fieldset { border-color: #334155; }
 
 [data-theme="dark"] .editingRow input.changedInput,
