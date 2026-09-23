@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+import tempfile
+from pathlib import Path
+from fastapi import APIRouter, Cookie, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from io import BytesIO
+from starlette.background import BackgroundTask
 from typing import Optional
 
 from backend.app.core.config import AUTH_CONFIG_PATH, SESSION_COOKIE_SECURE, TRUSTED_ORIGINS
@@ -35,6 +39,7 @@ from backend.app.services.models import (
     BrokerDraft,
     BrokerSaveRequest,
     ChangePassphraseRequest,
+    DatabaseTransferRequest,
     CleanDatabaseResult,
     ClassificationRefreshResult,
     CurrencySetting,
@@ -80,6 +85,7 @@ from backend.app.services.models import (
     ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch, FundHtmlSyncRequest,
     HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskSettings,
     FeeAnalysis, FeeSettings, SecurityFee, SecurityFeeInput, PortfolioFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput,
+    FundDataSecurity, FundDataRefreshRequest, FundDataRefreshResult,
 )
 from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
 from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
@@ -102,6 +108,7 @@ from backend.app.services.repositories import (
     clean_static_account_data,
     get_brokers,
 )
+from backend.app.services.database_transfer_service import TransferError, create_export_file, import_export
 from backend.app.services.broker_service import delete_broker, preview_broker_configuration, save_broker
 from backend.app.services.insight_service import (
     create_goal, delete_goal, get_assumptions, insights, list_goals_summary, list_targets,
@@ -114,6 +121,7 @@ from backend.app.services.scenario_service import (
 from backend.app.services.exposure_service import (
     cached_public_preview, exposure_analysis, get_composition, preview_public_metadata, save_composition, accept_public_metadata, get_fund_metadata, research_peers, cached_peer_research,
 )
+from backend.app.services.fund_data_service import list_fund_data, refresh_fund_data
 from backend.app.services.risk_service import (
     get_risk_settings, refresh_market_history, risk_analysis, save_manual_history, save_manual_market_series, save_risk_settings,
 )
@@ -498,6 +506,18 @@ def look_through() -> ExposureAnalysis:
         return analytics_cache.get("exposure", database_manager.revision, lambda: exposure_analysis(conn))
 
 
+@router.get("/fund-data", response_model=list[FundDataSecurity])
+def fund_data() -> list[FundDataSecurity]:
+    with get_connection() as conn:
+        return list_fund_data(conn)
+
+
+@router.post("/fund-data/refresh", response_model=list[FundDataRefreshResult])
+def refresh_funds(payload: FundDataRefreshRequest) -> list[FundDataRefreshResult]:
+    with get_connection() as conn:
+        return refresh_fund_data(conn, payload.security_ids)
+
+
 @router.get("/fund-compositions/{security_id}", response_model=Optional[FundComposition])
 def fund_composition(security_id: int) -> Optional[FundComposition]:
     with get_connection() as conn:
@@ -844,6 +864,53 @@ def reset_application(response: Response) -> CleanDatabaseResult:
         reset=True,
         message="All application data, settings, and encryption credentials were removed.",
     )
+
+
+@router.post("/database/export")
+def export_database(payload: DatabaseTransferRequest) -> FileResponse:
+    """Create a user-requested, plain SQLite snapshot without retaining it."""
+    try:
+        with get_connection() as conn:
+            snapshot = create_export_file(conn, payload.categories)
+    except TransferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(
+        snapshot,
+        media_type="application/vnd.sqlite3",
+        filename="portfolio-analyser-export.db",
+        background=BackgroundTask(snapshot.unlink, missing_ok=True),
+    )
+
+
+@router.post("/database/import")
+async def import_database(file: UploadFile = File(...), categories: str = Form(...)) -> dict[str, object]:
+    """Validate an uploaded export fully before replacing selected live data."""
+    try:
+        requested = json.loads(categories)
+        if not isinstance(requested, list):
+            raise ValueError
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Import categories must be a JSON list.") from exc
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+            temporary = Path(handle.name)
+            total = 0
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > 100 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Import files must be 100 MB or smaller.")
+                handle.write(chunk)
+        try:
+            with get_connection() as conn:
+                counts = import_export(conn, temporary, requested)
+        except TransferError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"imported": True, "categories": requested, "record_counts": counts}
+    finally:
+        await file.close()
+        if temporary:
+            temporary.unlink(missing_ok=True)
 
 
 @router.post("/database/clean", response_model=CleanDatabaseResult)

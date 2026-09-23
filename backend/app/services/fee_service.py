@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from datetime import date, datetime, timezone
 
-from backend.app.services.exposure_service import cached_public_preview
 from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, get_display_currency
 from backend.app.services.insight_service import get_assumptions
 from backend.app.services.models import (
@@ -25,15 +24,15 @@ def _stale(as_of: str | None, reviewed: str) -> bool:
 
 
 def list_security_fees(conn: sqlite3.Connection) -> list[SecurityFee]:
-    rows = conn.execute("""SELECT s.id, s.name, f.expense_ratio_percent, f.source, f.as_of_date, f.reviewed_at
-                           FROM securities s LEFT JOIN security_fee_metadata f ON f.security_id=s.id
+    rows = conn.execute("""SELECT s.id, s.name, m.expense_ratio_percent, m.provider AS source, m.as_of_date, m.reviewed_at
+                           FROM securities s LEFT JOIN fund_metadata m ON m.security_id=s.id
                            WHERE EXISTS (SELECT 1 FROM positions p WHERE p.security_id=s.id)
                              AND EXISTS (SELECT 1 FROM positions current WHERE current.security_id=s.id
                                AND current.snapshot_date=(SELECT MAX(p2.snapshot_date) FROM positions p2 WHERE p2.account_id=current.account_id))
                              AND LOWER(s.security_type) <> 'cash'
                            ORDER BY s.name""").fetchall()
     return [SecurityFee(security_id=row["id"], security_name=row["name"], expense_ratio_percent=row["expense_ratio_percent"],
-                        source=row["source"] or "unset", as_of_date=row["as_of_date"], reviewed_at=row["reviewed_at"] or "",
+                        source=row["source"] or "yfinance refresh required", as_of_date=row["as_of_date"], reviewed_at=row["reviewed_at"] or "",
                         stale=True if not row["reviewed_at"] else _stale(row["as_of_date"], row["reviewed_at"])) for row in rows]
 
 
@@ -54,11 +53,7 @@ def save_security_fee(conn: sqlite3.Connection, security_id: int, payload: Secur
 
 
 def accept_public_fee(conn: sqlite3.Connection, security_id: int) -> SecurityFee:
-    preview = cached_public_preview(conn, security_id)
-    if preview.expense_ratio_percent is None:
-        raise ValueError("The public preview did not include an expense ratio.")
-    return save_security_fee(conn, security_id, SecurityFeeInput(expense_ratio_percent=preview.expense_ratio_percent,
-                                                                 source=preview.provider, as_of_date=None))
+    raise ValueError("Expense ratios are read-only and refreshed with Fund data.")
 
 
 def list_portfolio_fees(conn: sqlite3.Connection) -> list[PortfolioFee]:

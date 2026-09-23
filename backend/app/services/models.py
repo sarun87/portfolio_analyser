@@ -22,6 +22,10 @@ class ChangePassphraseRequest(BaseModel):
     new_passphrase: str = Field(min_length=8)
 
 
+class DatabaseTransferRequest(BaseModel):
+    categories: list[str] = Field(min_length=1)
+
+
 class Broker(BaseModel):
     id: int
     name: str
@@ -787,6 +791,41 @@ class FundMetadata(BaseModel):
     fetched_at: Optional[str] = None
     unavailable_fields: list[str] = Field(default_factory=list)
     reviewed_at: str
+
+
+class FundDataHolding(BaseModel):
+    symbol: str
+    name: str
+    weight_percent: float
+
+
+class FundDataSecurity(BaseModel):
+    security_id: int
+    security_name: str
+    security_type: str
+    symbol: Optional[str] = None
+    yahoo_symbol: Optional[str] = None
+    last_refreshed_at: Optional[str] = None
+    holdings_count: int = 0
+    sector_count: int = 0
+    history_count: int = 0
+    expense_ratio_percent: Optional[float] = None
+    warnings: list[str] = Field(default_factory=list)
+    holdings: list[FundDataHolding] = Field(default_factory=list)
+    sectors: dict[str, float] = Field(default_factory=dict)
+
+
+class FundDataRefreshRequest(BaseModel):
+    security_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class FundDataRefreshResult(BaseModel):
+    security_id: int
+    security_name: str
+    yahoo_symbol: Optional[str] = None
+    refreshed: bool
+    message: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PeerCandidate(BaseModel):

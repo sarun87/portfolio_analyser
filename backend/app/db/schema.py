@@ -240,6 +240,32 @@ CREATE TABLE IF NOT EXISTS fund_metadata (
   reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS fund_sector_weights (
+  fund_security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+  sector TEXT NOT NULL,
+  weight_percent REAL NOT NULL CHECK (weight_percent >= 0 AND weight_percent <= 100),
+  PRIMARY KEY (fund_security_id, sector)
+);
+
+CREATE TABLE IF NOT EXISTS fund_ohlcv_history (
+  fund_security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+  price_date TEXT NOT NULL,
+  open REAL,
+  high REAL,
+  low REAL,
+  close REAL,
+  adjusted_close REAL,
+  volume REAL,
+  PRIMARY KEY (fund_security_id, price_date)
+);
+
+CREATE TABLE IF NOT EXISTS fund_refresh_status (
+  security_id INTEGER PRIMARY KEY REFERENCES securities(id) ON DELETE CASCADE,
+  yahoo_symbol TEXT NOT NULL,
+  refreshed_at TEXT NOT NULL,
+  warnings_json TEXT NOT NULL DEFAULT '[]'
+);
+
 CREATE TABLE IF NOT EXISTS private_equity_assets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   company_name TEXT NOT NULL,
@@ -328,6 +354,7 @@ CREATE INDEX IF NOT EXISTS idx_allocation_targets_dimension ON allocation_target
 CREATE INDEX IF NOT EXISTS idx_goals_target_month ON goals(target_month);
 CREATE INDEX IF NOT EXISTS idx_saved_scenarios_updated ON saved_scenarios(updated_at);
 CREATE INDEX IF NOT EXISTS idx_fund_constituents_fund ON fund_constituents(fund_security_id);
+CREATE INDEX IF NOT EXISTS idx_fund_ohlcv_date ON fund_ohlcv_history(fund_security_id, price_date);
 CREATE INDEX IF NOT EXISTS idx_private_equity_company ON private_equity_assets(company_name);
 CREATE INDEX IF NOT EXISTS idx_market_series_security ON market_series(security_id);
 CREATE INDEX IF NOT EXISTS idx_market_points_date ON market_series_points(observation_date);
@@ -459,7 +486,31 @@ def _liabilities(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_liabilities_type ON liabilities(liability_type)")
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities))
+def _yfinance_fund_data(conn: sqlite3.Connection) -> None:
+    """The old fund editor is disposable; yfinance data is stored afresh."""
+    conn.executescript("""
+        DELETE FROM fund_constituents;
+        DELETE FROM fund_compositions;
+        DELETE FROM fund_metadata;
+        CREATE TABLE IF NOT EXISTS fund_sector_weights (
+          fund_security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+          sector TEXT NOT NULL,
+          weight_percent REAL NOT NULL CHECK (weight_percent >= 0 AND weight_percent <= 100),
+          PRIMARY KEY (fund_security_id, sector));
+        CREATE TABLE IF NOT EXISTS fund_ohlcv_history (
+          fund_security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+          price_date TEXT NOT NULL, open REAL, high REAL, low REAL, close REAL,
+          adjusted_close REAL, volume REAL,
+          PRIMARY KEY (fund_security_id, price_date));
+        CREATE TABLE IF NOT EXISTS fund_refresh_status (
+          security_id INTEGER PRIMARY KEY REFERENCES securities(id) ON DELETE CASCADE,
+          yahoo_symbol TEXT NOT NULL, refreshed_at TEXT NOT NULL,
+          warnings_json TEXT NOT NULL DEFAULT '[]');
+        CREATE INDEX IF NOT EXISTS idx_fund_ohlcv_date ON fund_ohlcv_history(fund_security_id, price_date);
+    """)
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(), commitImport: vi.fn(), previewBroker: vi.fn(), createBroker: vi.fn(), updateBroker: vi.fn(), deleteBroker: vi.fn(),
   updatePosition: vi.fn(), updatePositions: vi.fn(),
-  lookThrough: vi.fn(), saveFundComposition: vi.fn(), previewPublicMetadata: vi.fn(), acceptPublicComposition: vi.fn(),
+  lookThrough: vi.fn(), fundData: vi.fn(), refreshFundData: vi.fn(), saveFundComposition: vi.fn(), previewPublicMetadata: vi.fn(), acceptPublicComposition: vi.fn(),
   riskAnalysis: vi.fn(), riskSettings: vi.fn(), refreshMarketHistory: vi.fn(), saveRiskSettings: vi.fn(),
   importMarketHistory: vi.fn(), importManualMarketSeries: vi.fn(), feeAnalysis: vi.fn(), securityFees: vi.fn(),
   feeSettings: vi.fn(), saveSecurityFee: vi.fn(), previewPublicMetadataForFee: vi.fn(), acceptPublicFee: vi.fn(),
@@ -14,7 +14,7 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock("../lib/api", () => ({ api: apiMock }));
 
-import { AllocationPolicyPage, BrokerSettings, ExposureInsights, ExposurePage, FeesPage, GoalsPage, InsightsPage, MobilePositionCard, PositionsTable, ProfitLossTable, ProjectionSettings, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
+import { AllocationPolicyPage, BrokerSettings, ExposureInsights, ExposurePage, FeesPage, FundDataPage, GoalsPage, InsightsPage, MobilePositionCard, PositionsTable, ProfitLossTable, ProjectionSettings, RiskPage, ScenarioLab, UploadPage, ValueMetricsPage } from "../App";
 import type { GoalsSummary, Insights, Position } from "../lib/types";
 
 const fund = {
@@ -36,6 +36,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   apiMock.lookThrough.mockResolvedValue({display_currency:"USD",portfolio_value:100,composition_coverage_percent:0,
     company:[],sector:[],country:[],currency:[],asset_category:[],overlaps:[],compositions:[],warnings:["No composition"]});
+  apiMock.fundData.mockResolvedValue([{security_id:10,security_name:"Index Fund",security_type:"ETF",symbol:"FUND",yahoo_symbol:"FUND",holdings_count:1,sector_count:1,history_count:22,expense_ratio_percent:.03,warnings:[],holdings:[{symbol:"AAPL",name:"Apple",weight_percent:10}],sectors:{Technology:20}}]);
+  apiMock.refreshFundData.mockResolvedValue([{security_id:10,security_name:"Index Fund",yahoo_symbol:"FUND",refreshed:true,message:"Fund data refreshed.",warnings:[]}]);
   apiMock.riskSettings.mockResolvedValue({benchmark_symbol:"^GSPC",benchmark_currency:"USD",minimum_observations:60});
   apiMock.riskAnalysis.mockResolvedValue({display_currency:"USD",benchmark_symbol:"^GSPC",history_years:5,coverage_percent:0,
     covered_portfolio_volatility_percent:null,covered_portfolio_beta:null,covered_portfolio_max_drawdown_percent:null,
@@ -227,13 +229,9 @@ describe("decision coach workspaces", () => {
     expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({filters:{allocation_category:"Unclassified"}}));
   });
 
-  it("loads exposure and opens the manual fund editor", async () => {
+  it("loads exposure without a manual fund editor", async () => {
     const {rerender}=render(<ExposurePage positions={[fund]}/>);
     expect(await screen.findByText("Effective companies")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Fund"), {target:{value:"10"}});
-    fireEvent.click(screen.getByRole("button", {name:/add row/i}));
-    expect(screen.getByDisplayValue("new-1")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Fund"), {target:{value:""}});
     expect(screen.queryByRole("button", {name:/add row/i})).not.toBeInTheDocument();
     rerender(<ExposurePage positions={[{...fund,total_fmv_display:110}]}/>);
     await waitFor(()=>expect(apiMock.lookThrough).toHaveBeenCalledTimes(2));
@@ -268,15 +266,13 @@ describe("decision coach workspaces", () => {
     await waitFor(() => expect(apiMock.createPortfolioFee).toHaveBeenCalledWith(expect.objectContaining({name:"Advice",annual_percent:1})));
   });
 
-  it("requires a visible public fee draft before acceptance", async () => {
-    render(<FeesPage positions={[fund]} currency="USD"/>);
-    await screen.findByText("Security expense ratios");
-    const accept=screen.getByRole("button",{name:"Accept public"});
-    expect(accept).toBeDisabled();
-    fireEvent.click(screen.getByRole("button",{name:"Public draft"}));
-    await waitFor(()=>expect(accept).toBeEnabled());
-    fireEvent.click(accept);
-    await waitFor(()=>expect(apiMock.acceptPublicFee).toHaveBeenCalledWith(10));
+  it("refreshes selected funds from the Fund data workspace", async () => {
+    render(<FundDataPage/>);
+    expect(await screen.findByText("Fund data")).toBeInTheDocument();
+    expect(screen.getByText(/Top holdings: Apple/)).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Select Index Fund"));
+    fireEvent.click(screen.getByRole("button",{name:/Refresh selected/}));
+    await waitFor(()=>expect(apiMock.refreshFundData).toHaveBeenCalledWith([10]));
   });
 
   it("explains Scenario Lab inputs as display-currency amounts", () => {

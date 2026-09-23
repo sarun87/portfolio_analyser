@@ -175,8 +175,9 @@ def test_fee_drag_inr_fixed_fee_reserve_and_long_term_projections(advanced_portf
     save_assumptions(conn, FinancialAssumptions(expected_annual_return=.05, annual_volatility=.1, inflation_rate=.02,
                                                 monthly_household_contribution=0, monthly_expenses=10))
     save_fee_settings(conn, FeeSettings(cash_reserve_months=6))
-    save_security_fee(conn, fund_a, SecurityFeeInput(expense_ratio_percent=.5, source="manual"))
-    save_security_fee(conn, fund_b, SecurityFeeInput(expense_ratio_percent=1, source="manual"))
+    # Fund fees are now sourced from the yfinance-backed fund metadata.
+    conn.execute("INSERT INTO fund_metadata(security_id, provider, expense_ratio_percent, reviewed_at) VALUES (?, 'yfinance', .5, CURRENT_TIMESTAMP)", (fund_a,))
+    conn.execute("INSERT INTO fund_metadata(security_id, provider, expense_ratio_percent, reviewed_at) VALUES (?, 'yfinance', 1, CURRENT_TIMESTAMP)", (fund_b,))
     save_portfolio_fee(conn, PortfolioFeeInput(name="Advice", fee_type="advisory_percent", annual_percent=1,
                                                currency="USD"))
     save_portfolio_fee(conn, PortfolioFeeInput(name="HDFC account", fee_type="fixed_account", annual_amount=83.5,
