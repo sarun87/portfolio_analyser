@@ -123,13 +123,6 @@ const sectors = ["Communication Services", "Consumer Discretionary", "Consumer S
 type PositionColumn = "broker" | "account" | "security" | "type" | "allocation" | "sector" | "country" | "exchange" | "snapshot" | "acquired" | "lot" | "units" | "cost_basis" | "fmv" | "currency";
 type TableCurrencyMode = "display" | "position";
 type PositionFilterKey = "broker_name" | "account_mask" | "symbol" | "security_type" | "allocation_category" | "sector" | "investment_country" | "exchange" | "acquisition_date" | "lot_number" | "currency";
-const positionFilterColumns: Array<{ key: PositionFilterKey; label: string }> = [
-  { key: "broker_name", label: "Broker" }, { key: "account_mask", label: "Account" },
-  { key: "symbol", label: "Symbol" }, { key: "security_type", label: "Type" },
-  { key: "allocation_category", label: "Allocation" }, { key: "sector", label: "Sector" },
-  { key: "investment_country", label: "Country" }, { key: "exchange", label: "Exchange" },
-  { key: "acquisition_date", label: "Acquired" }, { key: "lot_number", label: "Lot" }, { key: "currency", label: "Currency" }
-];
 const positionColumns: Array<{ key: PositionColumn; label: string }> = [
   { key: "broker", label: "Broker" }, { key: "account", label: "Account" }, { key: "security", label: "Security" },
   { key: "type", label: "Type" }, { key: "allocation", label: "Allocation" }, { key: "country", label: "Country" },
@@ -1294,9 +1287,21 @@ function useTableColumnFilters<T>(rows: T[], columns: TableFilterColumn<T>[]) {
     const selected = filters[column.label] || [];
     return !selected.length || selected.includes(String(column.value(row) ?? ""));
   })), [columns, filters, rows]);
-  const active = Object.values(filters).reduce((sum, values) => sum + values.length, 0);
-  const control = <details className="columnPicker columnFilterPicker"><summary>Filters{active ? ` (${active})` : ""}</summary><div className="columnPickerMenu columnFilterMenu"><div className="columnPickerActions"><button className="secondary" disabled={!active} onClick={() => setFilters({})}>Clear filters</button></div>{columns.map(column => { const values = [...new Set(rows.map(row => String(column.value(row) ?? "")))].sort((a, b) => a.localeCompare(b)); return <fieldset key={column.label}><legend>{column.label}</legend>{values.map(value => <label key={value}><input type="checkbox" checked={(filters[column.label] || []).includes(value)} onChange={() => setFilters(current => { const selected = current[column.label] || []; const next = selected.includes(value) ? selected.filter(item => item !== value) : [...selected, value]; return {...current, [column.label]: next}; })}/>{value || "Unspecified"}</label>)}</fieldset>; })}</div></details>;
-  return { filtered, control };
+  function headerFilter(columnLabel: string, headerLabel = columnLabel) {
+    const column = columns.find(item => item.label === columnLabel);
+    if (!column) return null;
+    const values = [...new Set(rows.map(row => String(column.value(row) ?? "")))].sort((a, b) => a.localeCompare(b));
+    const selected = filters[columnLabel] || [];
+    return <ColumnHeaderFilter label={headerLabel} values={values} selected={selected} onToggle={(value) => setFilters(current => {
+      const currentValues = current[columnLabel] || [];
+      const next = currentValues.includes(value) ? currentValues.filter(item => item !== value) : [...currentValues, value];
+      const nextFilters = { ...current };
+      if (next.length) nextFilters[columnLabel] = next;
+      else delete nextFilters[columnLabel];
+      return nextFilters;
+    })} />;
+  }
+  return { filtered, headerFilter };
 }
 
 export function PositionsTable({
@@ -1352,8 +1357,6 @@ export function PositionsTable({
   }, [visibleColumns]);
 
   const columnVisible = (column: PositionColumn) => visibleColumns.includes(column);
-  const activeColumnFilterCount = Object.values(columnFilters).reduce((count, values) => count + (values?.length || 0), 0);
-
   function toggleColumnFilter(column: PositionFilterKey, value: string) {
     setColumnFilters(current => {
       const selected = current[column] || [];
@@ -1364,6 +1367,11 @@ export function PositionsTable({
 
   function toggleColumn(column: PositionColumn) {
     setVisibleColumns((current) => current.includes(column) ? current.filter((key) => key !== column) : [...current, column]);
+  }
+
+  function columnFilter(column: PositionFilterKey, label: string) {
+    const values = [...new Set(positions.map(position => String(position[column] ?? "")))].sort((left, right) => left.localeCompare(right));
+    return <ColumnHeaderFilter label={label} values={values} selected={columnFilters[column] || []} onToggle={(value) => toggleColumnFilter(column, value)} />;
   }
 
   useEffect(() => {
@@ -1590,16 +1598,6 @@ export function PositionsTable({
               </div>
             </div>
           </details>
-          <details className="columnPicker columnFilterPicker">
-            <summary>Filters{activeColumnFilterCount ? ` (${activeColumnFilterCount})` : ""}</summary>
-            <div className="columnPickerMenu columnFilterMenu">
-              <div className="columnPickerActions"><button className="secondary" disabled={!activeColumnFilterCount} onClick={() => setColumnFilters({})}>Clear filters</button></div>
-              {positionFilterColumns.map((column) => {
-                const values = [...new Set(positions.map(position => String(position[column.key] ?? "")))].sort((left, right) => left.localeCompare(right));
-                return <fieldset key={column.key}><legend>{column.label}</legend>{values.map(value => <label key={value}><input type="checkbox" checked={(columnFilters[column.key] || []).includes(value)} onChange={() => toggleColumnFilter(column.key, value)} />{value || "Unspecified"}</label>)}</fieldset>;
-              })}
-            </div>
-          </details>
           <button className="secondary" disabled={editMode || addingPosition} onClick={() => { setShowAddPosition((current) => !current); setAddError(null); }}>
             {showAddPosition ? <X size={15} /> : <Plus size={15} />}
             {showAddPosition ? "Cancel Add" : "Add Position"}
@@ -1659,17 +1657,17 @@ export function PositionsTable({
           <thead>
             <tr>
               {editMode && <th><SelectAllCheckbox checked={filtered.length > 0 && filtered.every((position) => selectedPositionIds.has(position.id))} indeterminate={filtered.some((position) => selectedPositionIds.has(position.id)) && !filtered.every((position) => selectedPositionIds.has(position.id))} onChange={toggleAllVisible} /></th>}
-              {columnVisible("broker") && <SortableTh label="Broker" sortKey="broker_name" sort={sort} onSort={setSort} />}
-              {columnVisible("account") && <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={setSort} />}
-              {columnVisible("security") && <SortableTh label="Security" sortKey="security" sort={sort} onSort={setSort} />}
-              {columnVisible("type") && <SortableTh label="Type" sortKey="security_type" sort={sort} onSort={setSort} />}
-              {columnVisible("allocation") && <SortableTh label="Allocation" sortKey="allocation_category" sort={sort} onSort={setSort} />}
-              {columnVisible("sector") && <SortableTh label="Sector" sortKey="sector" sort={sort} onSort={setSort} />}
-              {columnVisible("country") && <SortableTh label="Country" sortKey="investment_country" sort={sort} onSort={setSort} />}
-              {columnVisible("exchange") && <SortableTh label="Exchange" sortKey="exchange" sort={sort} onSort={setSort} />}
+              {columnVisible("broker") && <SortableTh label="Broker" sortKey="broker_name" sort={sort} onSort={setSort} filter={columnFilter("broker_name", "Broker")} />}
+              {columnVisible("account") && <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={setSort} filter={columnFilter("account_mask", "Account")} />}
+              {columnVisible("security") && <SortableTh label="Security" sortKey="security" sort={sort} onSort={setSort} filter={columnFilter("symbol", "Security")} />}
+              {columnVisible("type") && <SortableTh label="Type" sortKey="security_type" sort={sort} onSort={setSort} filter={columnFilter("security_type", "Type")} />}
+              {columnVisible("allocation") && <SortableTh label="Allocation" sortKey="allocation_category" sort={sort} onSort={setSort} filter={columnFilter("allocation_category", "Allocation")} />}
+              {columnVisible("sector") && <SortableTh label="Sector" sortKey="sector" sort={sort} onSort={setSort} filter={columnFilter("sector", "Sector")} />}
+              {columnVisible("country") && <SortableTh label="Country" sortKey="investment_country" sort={sort} onSort={setSort} filter={columnFilter("investment_country", "Country")} />}
+              {columnVisible("exchange") && <SortableTh label="Exchange" sortKey="exchange" sort={sort} onSort={setSort} filter={columnFilter("exchange", "Exchange")} />}
               {columnVisible("snapshot") && <SortableTh label="Snapshot" sortKey="snapshot_date" sort={sort} onSort={setSort} />}
-              {columnVisible("acquired") && <SortableTh label="Acquired" sortKey="acquisition_date" sort={sort} onSort={setSort} />}
-              {columnVisible("lot") && <SortableTh label="Lot" sortKey="lot_number" sort={sort} onSort={setSort} />}
+              {columnVisible("acquired") && <SortableTh label="Acquired" sortKey="acquisition_date" sort={sort} onSort={setSort} filter={columnFilter("acquisition_date", "Acquired")} />}
+              {columnVisible("lot") && <SortableTh label="Lot" sortKey="lot_number" sort={sort} onSort={setSort} filter={columnFilter("lot_number", "Lot")} />}
               {columnVisible("units") && <SortableTh label="Units" sortKey="units" sort={sort} onSort={setSort} numeric />}
               {columnVisible("cost_basis") && (editMode ? (
                 <>
@@ -1680,7 +1678,7 @@ export function PositionsTable({
                 <SortableTh label={`${moneyMode === "total" ? "Total Cost Basis" : "Per Unit Cost Basis"} (${displayedCurrencyLabel})`} sortKey={moneyMode === "total" ? "total_cost_basis" : "per_unit_cost_basis"} sort={sort} onSort={setSort} numeric />
               ))}
               {columnVisible("fmv") && (editMode ? <><SortableTh label="Per Unit FMV" sortKey="per_unit_fmv" sort={sort} onSort={setSort} numeric /><SortableTh label="Total FMV" sortKey="total_fmv" sort={sort} onSort={setSort} numeric /></> : <SortableTh label={`${moneyMode === "total" ? "Total FMV" : "Per Unit FMV"} (${displayedCurrencyLabel})`} sortKey={moneyMode === "total" ? "total_fmv" : "per_unit_fmv"} sort={sort} onSort={setSort} numeric />)}
-              {columnVisible("currency") && <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={setSort} />}
+              {columnVisible("currency") && <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={setSort} filter={columnFilter("currency", "Currency")} />}
               <th>Actions</th>
             </tr>
           </thead>
@@ -1819,23 +1817,36 @@ function SortableTh<T>({
   sortKey,
   sort,
   onSort,
-  numeric
+  numeric,
+  filter
 }: {
   label: string;
   sortKey: SortState<T>["key"];
   sort: SortState<T>;
   onSort: (next: SortState<T>) => void;
   numeric?: boolean;
+  filter?: React.ReactNode;
 }) {
   const active = sort.key === sortKey;
   return (
     <th className={numeric ? "num" : ""}>
-      <button className="sortButton" onClick={() => onSort(nextSort(sort, sortKey))}>
-        {label}
-        <span>{active ? (sort.direction === "asc" ? "▲" : "▼") : ""}</span>
-      </button>
+      <span className="tableHeaderControls"><button className="sortButton" onClick={() => onSort(nextSort(sort, sortKey))}>{label}<span>{active ? (sort.direction === "asc" ? "▲" : "▼") : ""}</span></button>{filter}</span>
     </th>
   );
+}
+
+function ColumnHeaderFilter({ label, values, selected, onToggle }: { label: string; values: string[]; selected: string[]; onToggle: (value: string) => void }) {
+  return <details className={`headerFilter${selected.length ? " active" : ""}`}>
+    <summary aria-label={`Filter ${label}`} title={`Filter ${label}`}>▾{selected.length ? <sup>{selected.length}</sup> : null}</summary>
+    <div className="headerFilterMenu">
+      <div className="columnPickerActions"><button className="secondary" disabled={!selected.length} onClick={(event) => { event.preventDefault(); selected.forEach(onToggle); }}>Clear</button></div>
+      {values.map(value => <label key={value}><input type="checkbox" checked={selected.includes(value)} onChange={() => onToggle(value)} />{value || "Unspecified"}</label>)}
+    </div>
+  </details>;
+}
+
+function FilterableTh({ label, filter }: { label: string; filter?: React.ReactNode }) {
+  return <th><span className="tableHeaderControls"><span>{label}</span>{filter}</span></th>;
 }
 
 export function MobilePositionCard({ position, moneyMode = "total", currencyMode = "position", refreshing, canRefresh, onRefresh, onDelete }: { position: Position; moneyMode?: "total" | "per-unit"; currencyMode?: TableCurrencyMode; refreshing?: boolean; canRefresh?: boolean; onRefresh?: () => void; onDelete?: () => void }) {
@@ -1888,7 +1899,7 @@ function ProfitLossBubbleChart({ positions }: { positions: Position[] }) {
 export function ProfitLossTable({ positions, currencyMode = "position", onCurrencyModeChange }: { positions: Position[]; currencyMode?: TableCurrencyMode; onCurrencyModeChange?: (mode: TableCurrencyMode) => void }) {
   const [sort, setSort] = useState<SortState<Position>>({ key: "unrealized_gain_loss_native", direction: "desc" });
   const displayedCurrencyLabel = currencyMode === "position" ? "Position currency" : positions[0]?.display_currency || "USD";
-  const { filtered: filteredPositions, control: filters } = useTableColumnFilters(positions, [{label:"Broker",value:p=>p.broker_name},{label:"Account",value:p=>p.account_mask},{label:"Symbol",value:p=>p.symbol},{label:"Lot",value:p=>p.lot_number},{label:"Currency",value:p=>p.currency}]);
+  const { filtered: filteredPositions, headerFilter } = useTableColumnFilters(positions, [{label:"Broker",value:p=>p.broker_name},{label:"Account",value:p=>p.account_mask},{label:"Symbol",value:p=>p.symbol},{label:"Lot",value:p=>p.lot_number},{label:"Currency",value:p=>p.currency}]);
   const sorted = useMemo(
     () =>
       [...filteredPositions].sort((left, right) => {
@@ -1908,16 +1919,17 @@ export function ProfitLossTable({ positions, currencyMode = "position", onCurren
   );
   return (
     <section className="panel">
-      <div className="panelHeader"><h2>Unrealized Profit/Loss</h2><div className="tableTools">{filters}<label className="tableCurrencyToggle"><input type="checkbox" checked={currencyMode === "position"} disabled={!onCurrencyModeChange} onChange={(event) => onCurrencyModeChange?.(event.target.checked ? "position" : "display")} />Use position currency</label></div></div>
+      <div className="panelHeader"><h2>Unrealized Profit/Loss</h2><div className="tableTools"><label className="tableCurrencyToggle"><input type="checkbox" checked={currencyMode === "position"} disabled={!onCurrencyModeChange} onChange={(event) => onCurrencyModeChange?.(event.target.checked ? "position" : "display")} />Use position currency</label></div></div>
       <ProfitLossBubbleChart positions={positions} />
       <div className="tableWrap desktopDataTable">
         <table>
           <thead>
             <tr>
-              <SortableTh label="Security" sortKey="security" sort={sort} onSort={setSort} />
-              <SortableTh label="Broker" sortKey="broker_name" sort={sort} onSort={setSort} />
-              <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={setSort} />
-              <SortableTh label="Lot" sortKey="lot_number" sort={sort} onSort={setSort} />
+              <SortableTh label="Security" sortKey="security" sort={sort} onSort={setSort} filter={headerFilter("Symbol", "Security")} />
+              <SortableTh label="Broker" sortKey="broker_name" sort={sort} onSort={setSort} filter={headerFilter("Broker")} />
+              <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={setSort} filter={headerFilter("Account")} />
+              <SortableTh label="Lot" sortKey="lot_number" sort={sort} onSort={setSort} filter={headerFilter("Lot")} />
+              <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={setSort} filter={headerFilter("Currency")} />
               <SortableTh label={`Total Cost Basis (${displayedCurrencyLabel})`} sortKey="total_cost_basis" sort={sort} onSort={setSort} numeric />
               <SortableTh label={`Total FMV (${displayedCurrencyLabel})`} sortKey="total_fmv" sort={sort} onSort={setSort} numeric />
               <SortableTh label={`P/L (${displayedCurrencyLabel})`} sortKey="unrealized_gain_loss_native" sort={sort} onSort={setSort} numeric />
@@ -1934,6 +1946,7 @@ export function ProfitLossTable({ positions, currencyMode = "position", onCurren
                 <td>{position.broker_name}</td>
                 <td>{position.account_mask}</td>
                 <td>{position.lot_number || "-"}</td>
+                <td>{position.currency}</td>
                 <td className="num">{money(currencyMode === "position" ? position.total_cost_basis : position.total_cost_basis_display ?? position.total_cost_basis, currencyMode === "position" ? position.currency : position.display_currency)}</td>
                 <td className="num">{money(currencyMode === "position" ? position.total_fmv : position.total_fmv_display ?? position.total_fmv, currencyMode === "position" ? position.currency : position.display_currency)}</td>
                 <td className={`num ${(currencyMode === "position" ? position.unrealized_gain_loss_native ?? 0 : position.unrealized_gain_loss ?? position.unrealized_gain_loss_native ?? 0) >= 0 ? "good" : "bad"}`}>
@@ -2474,22 +2487,22 @@ function StaticAccountTable({
 }) {
   const total = accounts.reduce((sum, account) => sum + account.amount_display, 0);
   const displayCurrency = accounts[0]?.display_currency || "USD";
-  const { filtered, control: filters } = useTableColumnFilters(accounts, [{label:"Entity",value:a=>a.entity_name},{label:"Type",value:a=>a.account_type},{label:"Holder",value:a=>a.account_holder},{label:"Currency",value:a=>a.currency}]);
+  const { filtered, headerFilter } = useTableColumnFilters(accounts, [{label:"Entity",value:a=>a.entity_name},{label:"Type",value:a=>a.account_type},{label:"Holder",value:a=>a.account_holder},{label:"Currency",value:a=>a.currency}]);
   return (
     <section className="panel">
       <div className="panelHeader">
         <h2>{title}</h2>
-        <div className="tableTools">{filters}<strong>{money(total, displayCurrency)}</strong></div>
+        <div className="tableTools"><strong>{money(total, displayCurrency)}</strong></div>
       </div>
       <div className="tableWrap">
         <table>
           <thead>
             <tr>
-              <SortableTh label="Entity" sortKey="entity_name" sort={sort} onSort={onSort} />
-              <SortableTh label="Type" sortKey="account_type" sort={sort} onSort={onSort} />
-              <SortableTh label="Holder" sortKey="account_holder" sort={sort} onSort={onSort} />
+              <SortableTh label="Entity" sortKey="entity_name" sort={sort} onSort={onSort} filter={headerFilter("Entity")} />
+              <SortableTh label="Type" sortKey="account_type" sort={sort} onSort={onSort} filter={headerFilter("Type")} />
+              <SortableTh label="Holder" sortKey="account_holder" sort={sort} onSort={onSort} filter={headerFilter("Holder")} />
               <SortableTh label="Account" sortKey="account_mask" sort={sort} onSort={onSort} />
-              <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={onSort} />
+              <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={onSort} filter={headerFilter("Currency")} />
               <SortableTh label="Amount" sortKey="amount" sort={sort} onSort={onSort} numeric />
               <th>Notes</th>
               <th></th>
@@ -2589,7 +2602,7 @@ function RealEstatePage({
   const [sort, setSort] = useState<SortState<RealEstateAsset>>({ key: "property_info", direction: "asc" });
   const [error, setError] = useState<string | null>(null);
   const supported = currency?.supported_currencies || ["USD", "INR", "GBP", "EUR"];
-  const { filtered: filteredAssets, control: filters } = useTableColumnFilters(assets, [{label:"Property",value:a=>a.property_info},{label:"Entity",value:a=>a.entity_name},{label:"Currency",value:a=>a.currency}]);
+  const { filtered: filteredAssets, headerFilter } = useTableColumnFilters(assets, [{label:"Property",value:a=>a.property_info},{label:"Entity",value:a=>a.entity_name},{label:"Currency",value:a=>a.currency}]);
   const sorted = useMemo(
     () =>
       [...filteredAssets].sort((left, right) => {
@@ -2692,18 +2705,18 @@ function RealEstatePage({
       <section className="panel">
         <div className="panelHeader">
           <h2>Properties</h2>
-          <div className="tableTools">{filters}<strong>{money(total, displayCurrency)}</strong></div>
+          <div className="tableTools"><strong>{money(total, displayCurrency)}</strong></div>
         </div>
         <div className="tableWrap">
           <table>
             <thead>
               <tr>
-                <SortableTh label="Property" sortKey="property_info" sort={sort} onSort={setSort} />
-                <SortableTh label="Entity" sortKey="entity_name" sort={sort} onSort={setSort} />
+                <SortableTh label="Property" sortKey="property_info" sort={sort} onSort={setSort} filter={headerFilter("Property")} />
+                <SortableTh label="Entity" sortKey="entity_name" sort={sort} onSort={setSort} filter={headerFilter("Entity")} />
                 <SortableTh label="Purchase Date" sortKey="purchase_date" sort={sort} onSort={setSort} />
                 <SortableTh label="Purchase Value" sortKey="purchase_value" sort={sort} onSort={setSort} numeric />
                 <SortableTh label="Current Value" sortKey="current_value" sort={sort} onSort={setSort} numeric />
-                <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={setSort} />
+                <SortableTh label="Currency" sortKey="currency" sort={sort} onSort={setSort} filter={headerFilter("Currency")} />
                 <th>Notes</th>
                 <th></th>
               </tr>
@@ -2741,10 +2754,10 @@ function RealEstatePage({
 function PrivateEquityPage({assets,currency,onChanged}:{assets:PrivateEquityAsset[];currency:CurrencySetting|null;onChanged:(message:string)=>Promise<void>}) {
   const blank:PrivateEquityPayload={company_name:"",stage:"Seed",share_class:"Preferred",quantity:0,purchase_price_per_unit:0,investment_date:"",last_valuation_per_unit:0,valuation_date:"",ownership_percent:null,valuation_source:"",currency:currency?.display_currency||"USD",notes:""};
   const [form,setForm]=useState<PrivateEquityPayload>(blank); const [editing,setEditing]=useState<number|null>(null); const [error,setError]=useState<string|null>(null);
-  const total=assets.reduce((sum,a)=>sum+a.current_value_display,0); const display=assets[0]?.display_currency||currency?.display_currency||"USD"; const {filtered,control:filters}=useTableColumnFilters(assets,[{label:"Company",value:a=>a.company_name},{label:"Stage",value:a=>a.stage},{label:"Class",value:a=>a.share_class},{label:"Currency",value:a=>a.currency}]);
+  const total=assets.reduce((sum,a)=>sum+a.current_value_display,0); const display=assets[0]?.display_currency||currency?.display_currency||"USD"; const {filtered,headerFilter}=useTableColumnFilters(assets,[{label:"Company",value:a=>a.company_name},{label:"Stage",value:a=>a.stage},{label:"Class",value:a=>a.share_class},{label:"Currency",value:a=>a.currency}]);
   async function save(e:React.FormEvent){e.preventDefault();try{if(editing)await api.updatePrivateEquity(editing,form);else await api.createPrivateEquity(form);await onChanged(editing?"Private equity valuation updated.":"Private equity investment added.");setEditing(null);setForm(blank);}catch(err){setError(err instanceof Error?err.message:"Could not save private equity.");}}
   function edit(a:PrivateEquityAsset){setEditing(a.id);setForm({company_name:a.company_name,stage:a.stage,share_class:a.share_class,quantity:a.quantity,purchase_price_per_unit:a.purchase_price_per_unit,investment_date:a.investment_date||"",last_valuation_per_unit:a.last_valuation_per_unit,valuation_date:a.valuation_date||"",ownership_percent:a.ownership_percent??null,valuation_source:a.valuation_source||"",currency:a.currency,notes:a.notes||""});}
-  return <section className="stack"><section className="panel"><p className="eyebrow">No automated pricing or market-risk refresh</p><h2>{editing?"Update private equity":"Add private equity"}</h2><form className="assetForm" onSubmit={save}><label><span>Company</span><input required value={form.company_name} onChange={e=>setForm({...form,company_name:e.target.value})}/></label><label>Stage<select value={form.stage} onChange={e=>setForm({...form,stage:e.target.value})}>{["Pre-seed","Seed","Series A","Series B","Series C+","Growth","Secondary","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Share class<select value={form.share_class} onChange={e=>setForm({...form,share_class:e.target.value as "Common"|"Preferred"})}><option>Common</option><option>Preferred</option></select></label><label>Quantity<input required type="number" min="0" step="any" value={form.quantity} onChange={e=>setForm({...form,quantity:Number(e.target.value)})}/></label><label>Purchase price / unit<input required type="number" min="0" step="any" value={form.purchase_price_per_unit} onChange={e=>setForm({...form,purchase_price_per_unit:Number(e.target.value)})}/></label><label>Investment date<input type="date" value={form.investment_date||""} onChange={e=>setForm({...form,investment_date:e.target.value})}/></label><label>Last valuation / unit<input required type="number" min="0" step="any" value={form.last_valuation_per_unit} onChange={e=>setForm({...form,last_valuation_per_unit:Number(e.target.value)})}/></label><label>Valuation date<input type="date" value={form.valuation_date||""} onChange={e=>setForm({...form,valuation_date:e.target.value})}/></label><label>Ownership %<input type="number" min="0" max="100" step="any" value={form.ownership_percent??""} onChange={e=>setForm({...form,ownership_percent:e.target.value===""?null:Number(e.target.value)})}/></label><label>Valuation source<input value={form.valuation_source||""} onChange={e=>setForm({...form,valuation_source:e.target.value})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{(currency?.supported_currencies||supportedCurrencies).map(x=><option key={x}>{x}</option>)}</select></label><label className="wideField">Notes<textarea value={form.notes||""} onChange={e=>setForm({...form,notes:e.target.value})}/></label><div className="buttonRow left wideField"><button><Save size={16}/>{editing?"Update valuation":"Add"}</button>{editing&&<button type="button" className="secondary" onClick={()=>{setEditing(null);setForm(blank)}}>Cancel</button>}</div></form>{error&&<div className="error">{error}</div>}</section><section className="panel"><div className="panelHeader"><h2>Restricted, non-marketable holdings</h2><div className="tableTools">{filters}<strong>{money(total,display)}</strong></div></div><div className="tableWrap"><table><thead><tr><th>Company</th><th>Stage</th><th>Class</th><th>Current value</th><th>Gain / loss</th><th>Valuation date</th><th>Source</th><th></th></tr></thead><tbody>{filtered.map(a=><tr key={a.id}><td>{a.company_name}</td><td>{a.stage}</td><td>{a.share_class}</td><td>{money(a.current_value,a.currency)}</td><td>{money(a.unrealized_gain_loss,a.currency)}</td><td>{a.valuation_date||"-"}</td><td>{a.valuation_source||"-"}</td><td><button className="iconOnly" onClick={()=>edit(a)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deletePrivateEquity(a.id);await onChanged("Private equity investment deleted.")}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
+  return <section className="stack"><section className="panel"><p className="eyebrow">No automated pricing or market-risk refresh</p><h2>{editing?"Update private equity":"Add private equity"}</h2><form className="assetForm" onSubmit={save}><label><span>Company</span><input required value={form.company_name} onChange={e=>setForm({...form,company_name:e.target.value})}/></label><label>Stage<select value={form.stage} onChange={e=>setForm({...form,stage:e.target.value})}>{["Pre-seed","Seed","Series A","Series B","Series C+","Growth","Secondary","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Share class<select value={form.share_class} onChange={e=>setForm({...form,share_class:e.target.value as "Common"|"Preferred"})}><option>Common</option><option>Preferred</option></select></label><label>Quantity<input required type="number" min="0" step="any" value={form.quantity} onChange={e=>setForm({...form,quantity:Number(e.target.value)})}/></label><label>Purchase price / unit<input required type="number" min="0" step="any" value={form.purchase_price_per_unit} onChange={e=>setForm({...form,purchase_price_per_unit:Number(e.target.value)})}/></label><label>Investment date<input type="date" value={form.investment_date||""} onChange={e=>setForm({...form,investment_date:e.target.value})}/></label><label>Last valuation / unit<input required type="number" min="0" step="any" value={form.last_valuation_per_unit} onChange={e=>setForm({...form,last_valuation_per_unit:Number(e.target.value)})}/></label><label>Valuation date<input type="date" value={form.valuation_date||""} onChange={e=>setForm({...form,valuation_date:e.target.value})}/></label><label>Ownership %<input type="number" min="0" max="100" step="any" value={form.ownership_percent??""} onChange={e=>setForm({...form,ownership_percent:e.target.value===""?null:Number(e.target.value)})}/></label><label>Valuation source<input value={form.valuation_source||""} onChange={e=>setForm({...form,valuation_source:e.target.value})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{(currency?.supported_currencies||supportedCurrencies).map(x=><option key={x}>{x}</option>)}</select></label><label className="wideField">Notes<textarea value={form.notes||""} onChange={e=>setForm({...form,notes:e.target.value})}/></label><div className="buttonRow left wideField"><button><Save size={16}/>{editing?"Update valuation":"Add"}</button>{editing&&<button type="button" className="secondary" onClick={()=>{setEditing(null);setForm(blank)}}>Cancel</button>}</div></form>{error&&<div className="error">{error}</div>}</section><section className="panel"><div className="panelHeader"><h2>Restricted, non-marketable holdings</h2><div className="tableTools"><strong>{money(total,display)}</strong></div></div><div className="tableWrap"><table><thead><tr><FilterableTh label="Company" filter={headerFilter("Company")}/><FilterableTh label="Stage" filter={headerFilter("Stage")}/><FilterableTh label="Class" filter={headerFilter("Class")}/><FilterableTh label="Currency" filter={headerFilter("Currency")}/><th>Current value</th><th>Gain / loss</th><th>Valuation date</th><th>Source</th><th></th></tr></thead><tbody>{filtered.map(a=><tr key={a.id}><td>{a.company_name}</td><td>{a.stage}</td><td>{a.share_class}</td><td>{a.currency}</td><td>{money(a.current_value,a.currency)}</td><td>{money(a.unrealized_gain_loss,a.currency)}</td><td>{a.valuation_date||"-"}</td><td>{a.valuation_source||"-"}</td><td><button className="iconOnly" onClick={()=>edit(a)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deletePrivateEquity(a.id);await onChanged("Private equity investment deleted.")}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 
 export function InsightsPage({ insights, findings, onNavigate = () => {} }: { insights: Insights; findings?: InsightFinding[]; onNavigate?: (navigation: NonNullable<InsightFinding["navigation"]>) => void }) {
@@ -2941,12 +2954,12 @@ function StressResults({result}:{result:StressTestResult}){const c=result.displa
 export function GoalsPage({ summary, currency, onChanged }: { summary: GoalsSummary; currency: CurrencySetting; onChanged: () => Promise<void> }) {
   const blank = (): GoalPayload => ({name:"",description:"",target_amount:0,target_currency:currency.display_currency,target_month:"",allocated_amount:0,allocated_currency:currency.display_currency,monthly_contribution:0,contribution_currency:currency.display_currency,priority:null});
   const [form, setForm] = useState<GoalPayload | null>(null); const [editing, setEditing] = useState<number | null>(null); const [error,setError]=useState<string|null>(null);
-  const {filtered:filteredGoals,control:filters}=useTableColumnFilters(summary.goals,[{label:"Goal",value:g=>g.name},{label:"Target month",value:g=>g.target_month},{label:"Target currency",value:g=>g.target_currency}]);
+  const {filtered:filteredGoals,headerFilter}=useTableColumnFilters(summary.goals,[{label:"Goal",value:g=>g.name},{label:"Target month",value:g=>g.target_month},{label:"Target currency",value:g=>g.target_currency}]);
   const edit = (goal?: GoalsSummary["goals"][number]) => { setEditing(goal?.id ?? null); setForm(goal ? {name:goal.name,description:goal.description,target_amount:goal.target_amount,target_currency:goal.target_currency,target_month:goal.target_month,allocated_amount:goal.allocated_amount,allocated_currency:goal.allocated_currency,monthly_contribution:goal.monthly_contribution,contribution_currency:goal.contribution_currency,priority:goal.priority} : blank()); };
   async function save() { if (!form) return; try { setError(null); editing ? await api.updateGoal(editing,form) : await api.createGoal(form); setForm(null); await onChanged(); } catch(e) {setError(e instanceof Error?e.message:"Could not save goal.");} }
   return <section className="stack"><div className="metricGrid"><MetricCard label="Investable financial assets" value={money(summary.investable_financial_assets,summary.display_currency)} /><MetricCard label="Allocated to goals" value={money(summary.total_allocated,summary.display_currency)} /><MetricCard label="Unallocated remainder" value={money(summary.unallocated_remainder,summary.display_currency)} /></div>{summary.over_allocated && <div className="error">Goal allocations exceed investable financial assets. This is a warning only; allocations are not blocked.</div>}<div className="panelHeader"><h2>Goals</h2><button className="primaryButton" onClick={() => edit()}><Target size={16}/> Add goal</button></div>
   {form && <section className="panel"><h2>{editing ? "Edit goal" : "New goal"}</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Target month<input type="month" value={form.target_month} onChange={e=>setForm({...form,target_month:e.target.value})}/></label><label>Target amount at target date<input type="number" value={form.target_amount} onChange={e=>setForm({...form,target_amount:Number(e.target.value)})}/><small>Enter the amount needed at the target date; it is already inflation-adjusted.</small></label><label>Target currency<CurrencyInput value={form.target_currency} onChange={v=>setForm({...form,target_currency:v})} currencies={currency.supported_currencies}/></label><label>Manual allocation<input type="number" value={form.allocated_amount} onChange={e=>setForm({...form,allocated_amount:Number(e.target.value)})}/></label><label>Allocation currency<CurrencyInput value={form.allocated_currency} onChange={v=>setForm({...form,allocated_currency:v})} currencies={currency.supported_currencies}/></label><label>Monthly contribution<input type="number" value={form.monthly_contribution} onChange={e=>setForm({...form,monthly_contribution:Number(e.target.value)})}/></label><label>Contribution currency<CurrencyInput value={form.contribution_currency} onChange={v=>setForm({...form,contribution_currency:v})} currencies={currency.supported_currencies}/></label><label>Priority<input type="number" value={form.priority ?? ""} onChange={e=>setForm({...form,priority:e.target.value ? Number(e.target.value) : null})}/></label><label>Description<input value={form.description ?? ""} onChange={e=>setForm({...form,description:e.target.value})}/></label></div><div className="buttonRow left"><button className="primaryButton" onClick={save}>Save goal</button><button className="secondary" onClick={()=>setForm(null)}>Cancel</button></div>{error&&<div className="error">{error}</div>}</section>}
-  <GoalFundingChart goals={summary.goals} currency={summary.display_currency}/><section className="panel"><div className="tableTools">{filters}</div><div className="tableWrap"><table><thead><tr><th>Goal</th><th>Target</th><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{filteredGoals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td className={g.projected_shortfall_surplus == null || g.projected_shortfall_surplus === 0 ? undefined : g.projected_shortfall_surplus > 0 ? "good" : "bad"}>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
+  <GoalFundingChart goals={summary.goals} currency={summary.display_currency}/><section className="panel"><div className="tableWrap"><table><thead><tr><FilterableTh label="Goal" filter={<>{headerFilter("Goal")}{headerFilter("Target month")}</>}/><FilterableTh label="Target" filter={headerFilter("Target currency")}/><th>Projected value</th><th>Shortfall / surplus</th><th>Required monthly</th><th>Reach probability</th><th></th></tr></thead><tbody>{filteredGoals.map(g=><tr key={g.id}><td><strong>{g.name}</strong><br/><small>{g.target_month}</small></td><td>{money(g.target_amount_display,g.display_currency)}</td><td>{g.projected_value == null ? "Set assumptions" : money(g.projected_value,g.display_currency)}</td><td className={g.projected_shortfall_surplus == null || g.projected_shortfall_surplus === 0 ? undefined : g.projected_shortfall_surplus > 0 ? "good" : "bad"}>{g.projected_shortfall_surplus == null ? "-" : money(g.projected_shortfall_surplus,g.display_currency)}</td><td>{g.required_monthly_contribution == null ? "-" : money(g.required_monthly_contribution,g.display_currency)}</td><td>{g.probability_of_reaching == null ? "-" : pct(g.probability_of_reaching)}</td><td><button className="iconOnly" onClick={()=>edit(g)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{if(confirm(`Delete ${g.name}?`)){await api.deleteGoal(g.id); await onChanged();}}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 function CurrencyInput({value,onChange,currencies}:{value:string;onChange:(v:string)=>void;currencies:string[]}) { return <select value={value} onChange={e=>onChange(e.target.value)}>{currencies.map(c=><option key={c}>{c}</option>)}</select>; }
 
@@ -3055,8 +3068,9 @@ export function ProjectionSettings({ insights, calculationInProgress = false, as
   const [form, setForm] = useState<FinancialAssumptions>(assumptions || {});
   const blankExpense = (): ScheduledExpenseInput => ({name:"",expense_type:"one_time",amount:0,currency,expense_date:"",start_date:"",end_date:""});
   const [expense, setExpense] = useState<ScheduledExpenseInput>(blankExpense()); const [editingExpense, setEditingExpense] = useState<number|null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [reserveMonths, setReserveMonths] = useState(6); const [message, setMessage] = useState<string | null>(null); const [error, setError] = useState<string | null>(null);
   useEffect(() => setForm(assumptions || {}), [assumptions]);
+  useEffect(() => { api.feeSettings().then(settings => setReserveMonths(settings.cash_reserve_months)).catch(e => setError(e instanceof Error ? e.message : "Could not load the cash reserve target.")); }, []);
   async function save() { try { setError(null); await api.saveAssumptions(form); await onChanged(); } catch (e) { setError(e instanceof Error ? e.message : "Could not save assumptions."); } }
   const fields: Array<[keyof FinancialAssumptions, string, string]> = [
     ["current_age", "Current age", "years"], ["end_age", "End age", "years"], ["monthly_expenses", "Monthly household expenses", "amount"], ["monthly_household_contribution", "Monthly investment contribution", "amount"],
@@ -3064,10 +3078,12 @@ export function ProjectionSettings({ insights, calculationInProgress = false, as
     ["short_term_tax_rate", "Short-term indicative tax", "percent"], ["long_term_tax_rate", "Long-term indicative tax", "percent"], ["long_term_holding_days", "Long-term holding days", "days"]
   ];
   async function saveExpense() { try { setError(null); if(editingExpense) await api.updateScheduledExpense(editingExpense, expense); else await api.createScheduledExpense(expense); setExpense(blankExpense()); setEditingExpense(null); await onChanged(); } catch(e) { setError(e instanceof Error ? e.message : "Could not save scheduled expense."); } }
+  async function saveReserve() { try { setError(null); setMessage(null); await api.saveFeeSettings({cash_reserve_months:reserveMonths}); await onChanged(); setMessage("Cash reserve target saved."); } catch(e) { setError(e instanceof Error ? e.message : "Could not save the cash reserve target."); } }
   function edit(item: ScheduledExpense) { setEditingExpense(item.id); setExpense({...item}); }
   return <section className="stack"><ProjectionGuidancePage insights={insights} calculationInProgress={calculationInProgress}/><section className="panel"><h2>Expenses & Projections</h2><p>Lifetime projections use all financial assets, recurring spending, and the scheduled expenses below. Values are assumptions, not advice.</p>
     <div className="formGrid">{fields.map(([key, label, kind]) => <label key={key}>{kind === "amount" ? `${label} (${currency})` : label}<input type="number" min="0" step={kind === "years" ? "1" : "0.01"} value={form[key] == null ? "" : kind === "percent" ? Number((Number(form[key]) * 100).toPrecision(12)) : form[key]} onChange={e => setForm({...form, [key]: e.target.value === "" ? null : (kind === "percent" ? Number(e.target.value) / 100 : Number(e.target.value))})} />{kind === "percent" && <small>Enter percentage, e.g. 7 for 7%</small>}</label>)}</div>
     <div className="buttonRow left"><button className="primaryButton" onClick={save}><Save size={16}/> Save assumptions</button></div>{error && <div className="error">{error}</div>}</section>
+    <section className="panel"><h2>Cash reserve</h2><p className="disclosure">Set the number of months of household expenses to keep as a cash reserve. This informs the idle-cash and cash-drag analysis.</p><div className="formGrid"><label>Reserve target (months of expenses in {currency})<input type="number" min="0" step="0.5" value={reserveMonths} onChange={e=>setReserveMonths(Number(e.target.value))}/></label></div><button disabled={!Number.isFinite(reserveMonths)||reserveMonths<0} onClick={saveReserve}>Save reserve target</button>{message&&<div className="notice">{message}</div>}</section>
     <section className="panel"><div className="panelHeader"><h2>{editingExpense ? "Edit scheduled expense" : "Scheduled expenses"}</h2></div><div className="formGrid"><label>Name<input value={expense.name} onChange={e=>setExpense({...expense,name:e.target.value})}/></label><label>Type<select value={expense.expense_type} onChange={e=>setExpense({...expense,expense_type:e.target.value as ScheduledExpenseInput["expense_type"]})}><option value="one_time">One-time dated expense</option><option value="date_range">Date-range total</option></select></label><label>Amount<input type="number" min="0" value={expense.amount} onChange={e=>setExpense({...expense,amount:Number(e.target.value)})}/></label><label>Currency<CurrencyInput value={expense.currency} onChange={value=>setExpense({...expense,currency:value})} currencies={supportedCurrencies}/></label>{expense.expense_type==="one_time"?<label>Date<input type="date" value={expense.expense_date||""} onChange={e=>setExpense({...expense,expense_date:e.target.value})}/></label>:<><label>Start date<input type="date" value={expense.start_date||""} onChange={e=>setExpense({...expense,start_date:e.target.value})}/></label><label>End date<input type="date" value={expense.end_date||""} onChange={e=>setExpense({...expense,end_date:e.target.value})}/></label></>}</div><div className="buttonRow left"><button onClick={saveExpense}><Save size={16}/>{editingExpense?"Update expense":"Add expense"}</button>{editingExpense&&<button className="secondary" onClick={()=>{setEditingExpense(null);setExpense(blankExpense());}}>Cancel</button>}</div><p className="disclosure">Date-range amounts are totals in today’s money, spread evenly across the inclusive months and inflated in the projection.</p><div className="tableWrap"><table><thead><tr><th>Name</th><th>Schedule</th><th>Amount</th><th></th></tr></thead><tbody>{scheduledExpenses.map(item=><tr key={item.id}><td>{item.name}</td><td>{item.expense_type === "one_time" ? item.expense_date : `${item.start_date} – ${item.end_date}`}</td><td>{money(item.amount,item.currency)}</td><td><button className="iconOnly" onClick={()=>edit(item)}><Pencil size={15}/></button><button className="iconOnly" onClick={async()=>{await api.deleteScheduledExpense(item.id);await onChanged();}}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div></section></section>;
 }
 
@@ -3441,16 +3457,16 @@ export function RiskPage({positions,currency}:{positions:Position[];currency:str
 
 export function FeesPage({positions,currency}:{positions:Position[];currency:string}) {
   const blank:PortfolioFeeInput={name:"",fee_type:"advisory_percent",annual_percent:0,annual_amount:null,currency,enabled:true};
-  const [analysis,setAnalysis]=useState<FeeAnalysis|null>(null);const [securityFees,setSecurityFees]=useState<SecurityFee[]>([]);const [ratios,setRatios]=useState<Record<number,string>>({});const [publicDrafts,setPublicDrafts]=useState<Set<number>>(new Set());const [reserveMonths,setReserveMonths]=useState(6);const [form,setForm]=useState<PortfolioFeeInput>(blank);const [busy,setBusy]=useState(false);const [message,setMessage]=useState<string|null>(null);const [error,setError]=useState<string|null>(null);
-  async function load(){const [a,s,settings]=await Promise.all([api.feeAnalysis(),api.securityFees(),api.feeSettings()]);setAnalysis(a);setSecurityFees(s);setRatios(Object.fromEntries(s.map(x=>[x.security_id,x.expense_ratio_percent==null?"":String(x.expense_ratio_percent)])));setReserveMonths(settings.cash_reserve_months);}
+  const [analysis,setAnalysis]=useState<FeeAnalysis|null>(null);const [securityFees,setSecurityFees]=useState<SecurityFee[]>([]);const [ratios,setRatios]=useState<Record<number,string>>({});const [publicDrafts,setPublicDrafts]=useState<Set<number>>(new Set());const [form,setForm]=useState<PortfolioFeeInput>(blank);const [busy,setBusy]=useState(false);const [message,setMessage]=useState<string|null>(null);const [error,setError]=useState<string|null>(null);
+  async function load(){const [a,s]=await Promise.all([api.feeAnalysis(),api.securityFees()]);setAnalysis(a);setSecurityFees(s);setRatios(Object.fromEntries(s.map(x=>[x.security_id,x.expense_ratio_percent==null?"":String(x.expense_ratio_percent)])));}
   useEffect(()=>{load().catch(e=>setError(e.message));},[positions,currency]);
   async function saveRatio(id:number){setBusy(true);try{const raw=ratios[id];await api.saveSecurityFee(id,raw===""?null:Number(raw));await load();}catch(e){setError(e instanceof Error?e.message:"Could not save expense ratio.");}finally{setBusy(false);}}
   async function publicRatio(id:number){setBusy(true);setError(null);try{const preview=await api.previewPublicMetadata(id);if(preview.expense_ratio_percent==null)throw new Error("Public metadata did not include an expense ratio.");setRatios({...ratios,[id]:String(preview.expense_ratio_percent)});setPublicDrafts(current=>new Set(current).add(id));setMessage(`Draft expense ratio ${preview.expense_ratio_percent.toFixed(3)}% loaded. Use Accept public to persist it.`);}catch(e){setPublicDrafts(current=>{const next=new Set(current);next.delete(id);return next;});setError(e instanceof Error?e.message:"Public metadata unavailable.");}finally{setBusy(false);}}
   async function acceptRatio(id:number){if(!publicDrafts.has(id))return;setBusy(true);try{await api.acceptPublicFee(id);setPublicDrafts(current=>{const next=new Set(current);next.delete(id);return next;});await load();}catch(e){setError(e instanceof Error?e.message:"Could not accept public fee.");}finally{setBusy(false);}}
   async function addFee(){setBusy(true);try{await api.createPortfolioFee(form);setForm(blank);await load();}catch(e){setError(e instanceof Error?e.message:"Could not save portfolio fee.");}finally{setBusy(false);}}
-  async function saveReserve(){await api.saveFeeSettings({cash_reserve_months:reserveMonths});await load();}
   return <section className="stack"><section className="panel"><div className="panelHeader"><div><p className="eyebrow">Yahoo Finance fund refresh</p><h2>Security expense ratios</h2><p className="disclosure">Expense ratios are read-only. Refresh eligible funds from Analytics & Insights → Fund data.</p></div></div><div className="tableWrap"><table><thead><tr><th>Holding</th><th>Expense ratio</th><th>Source</th><th>Freshness</th></tr></thead><tbody>{securityFees.map(row=><tr key={row.security_id}><td>{row.security_name}</td><td>{row.expense_ratio_percent==null?"-":pct(row.expense_ratio_percent)}</td><td>{row.source}</td><td>{row.stale?"Stale / missing":"Current"}</td></tr>)}</tbody></table></div></section>
     <section className="panel"><h2>Advisory and account fees</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Type<select value={form.fee_type} onChange={e=>setForm({...form,fee_type:e.target.value as PortfolioFeeInput["fee_type"]})}><option value="advisory_percent">Advisory percentage</option><option value="fixed_account">Fixed account fee</option></select></label>{form.fee_type==="advisory_percent"?<label>Annual %<input type="number" min="0" step="0.01" value={form.annual_percent??""} onChange={e=>setForm({...form,annual_percent:Number(e.target.value),annual_amount:null})}/></label>:<><label>Annual amount ({form.currency})<input type="number" min="0" value={form.annual_amount??""} onChange={e=>setForm({...form,annual_amount:Number(e.target.value),annual_percent:null})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{supportedCurrencies.map(c=><option key={c}>{c}</option>)}</select></label></>}</div><button disabled={busy||!form.name.trim()} onClick={addFee}><Plus size={15}/>Add fee</button></section>
+    {message&&<div className="notice">{message}</div>}{error&&<div className="error">{error}</div>}
     {analysis&&<section className="panel"><div className="metricGrid"><MetricCard label="Estimated annual fees" value={money(analysis.total_annual_fees,analysis.display_currency)}/><MetricCard label="Annual fee share" value={pct(analysis.annual_fee_percent)}/><MetricCard label="Fund expenses" value={money(analysis.annual_fund_expenses,analysis.display_currency)}/></div><ul className="assumptionList">{analysis.warnings.map(w=><li key={w}>{w}</li>)}</ul></section>}</section>;
   /* Legacy expense-ratio editing removed; fund fees are read-only.
     <section className="panel"><h2>Advisory and account fees</h2><div className="formGrid"><label>Name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Type<select value={form.fee_type} onChange={e=>setForm({...form,fee_type:e.target.value as PortfolioFeeInput["fee_type"]})}><option value="advisory_percent">Advisory percentage</option><option value="fixed_account">Fixed account fee</option></select></label>{form.fee_type==="advisory_percent"?<label>Annual %<input type="number" min="0" step="0.01" value={form.annual_percent??""} onChange={e=>setForm({...form,annual_percent:Number(e.target.value),annual_amount:null})}/></label>:<><label>Annual amount ({form.currency})<input type="number" min="0" value={form.annual_amount??""} onChange={e=>setForm({...form,annual_amount:Number(e.target.value),annual_percent:null})}/></label><label>Currency<select value={form.currency} onChange={e=>setForm({...form,currency:e.target.value})}>{supportedCurrencies.map(c=><option key={c}>{c}</option>)}</select></label></>}</div><button disabled={busy||!form.name.trim()} onClick={addFee}><Plus size={15}/>Add fee</button>{analysis&&<div className="tableWrap"><table><thead><tr><th>Name</th><th>Type</th><th>Annual charge</th><th>Status</th><th></th></tr></thead><tbody>{analysis.portfolio_fees.map(fee=><tr key={fee.id}><td>{fee.name}</td><td>{fee.fee_type.replace("_"," ")}</td><td>{fee.fee_type==="advisory_percent"?pct(fee.annual_percent):money(fee.annual_amount,fee.currency)}</td><td>{fee.enabled?"Active":"Paused"}</td><td><div className="buttonRow compact"><button className="secondary" onClick={async()=>{await api.updatePortfolioFee(fee.id,{name:fee.name,fee_type:fee.fee_type,annual_percent:fee.annual_percent,annual_amount:fee.annual_amount,currency:fee.currency,enabled:!fee.enabled});await load();}}>{fee.enabled?"Pause":"Enable"}</button><button className="iconOnly" onClick={async()=>{await api.deletePortfolioFee(fee.id);await load();}}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table></div>}</section>

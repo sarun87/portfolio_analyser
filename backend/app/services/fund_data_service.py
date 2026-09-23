@@ -40,6 +40,18 @@ def _percent(value: Any) -> float | None:
     return float(value * 100 if abs(value) <= 1 else value)
 
 
+def _expense_ratio_percent(value: Any) -> float | None:
+    """Yahoo's ``netExpenseRatio`` is already expressed in percentage points.
+
+    Unlike yield, return, and holding-weight fields, a value of ``0.07`` means
+    0.07%, not the fraction 0.07.  Keep that unit as-is because all persisted
+    expense ratios and the UI use percentage points.
+    """
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+        return None
+    return float(value) if 0 <= value <= 100 else None
+
+
 def _facts(info: dict[str, Any]) -> dict[str, Any]:
     inception = info.get("fundInceptionDate")
     if isinstance(inception, (int, float)):
@@ -55,7 +67,7 @@ def _facts(info: dict[str, Any]) -> dict[str, Any]:
         "yield_percent": _percent(info.get("yield") or info.get("trailingAnnualDividendYield")),
         "turnover_percent": None,
         "beta": info.get("beta3Year"),
-        "expense_ratio_percent": _percent(info.get("netExpenseRatio")),
+        "expense_ratio_percent": _expense_ratio_percent(info.get("netExpenseRatio")),
         "return_3y_percent": _percent(info.get("threeYearAverageReturn")),
         "return_5y_percent": _percent(info.get("fiveYearAverageReturn")),
         "return_10y_percent": None,

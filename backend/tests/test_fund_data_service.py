@@ -2,11 +2,13 @@ import sqlite3
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from backend.app.db.schema import init_db
 from backend.app.services import fund_data_service
 from backend.app.services.exposure_service import exposure_analysis
 from backend.app.services.exposure_service import save_composition
+from backend.app.services.fee_service import fee_analysis
 from backend.app.services.insight_service import insights
 from backend.app.services.models import FundCompositionInput, FundConstituentInput
 
@@ -27,7 +29,7 @@ def test_refresh_uses_lse_symbol_and_preserves_old_data_on_error(monkeypatch):
     conn, security = _conn()
     history = pd.DataFrame({"Open":[1, 2], "High":[2, 3], "Low":[.5, 1], "Close":[1.5, 2.5], "Adj Close":[1.4, 2.4], "Volume":[10, 11]}, index=pd.to_datetime(["2026-09-01", "2026-09-02"]))
     holdings = pd.DataFrame({"Name":["Apple"], "Holding Percent":[.1]}, index=["AAPL"])
-    fake = SimpleNamespace(info={"netExpenseRatio": .0003, "category":"Large Blend"}, history=lambda **_: history,
+    fake = SimpleNamespace(info={"netExpenseRatio": .07, "category":"Large Blend"}, history=lambda **_: history,
                            funds_data=SimpleNamespace(top_holdings=holdings, sector_weightings={"technology": .2}))
     seen = []
     def ticker(symbol):
@@ -37,6 +39,9 @@ def test_refresh_uses_lse_symbol_and_preserves_old_data_on_error(monkeypatch):
     result = fund_data_service.refresh_fund_data(conn, [security])[0]
     assert result.refreshed and seen == ["CNDX.L"]
     assert conn.execute("SELECT COUNT(*) FROM fund_constituents").fetchone()[0] == 1
+    assert conn.execute("SELECT expense_ratio_percent FROM fund_metadata WHERE security_id=?", (security,)).fetchone()[0] == .07
+    # The fixture's fund value is $100: 0.07% produces a $0.07 annual cost.
+    assert fee_analysis(conn).annual_fund_expenses == pytest.approx(.07)
     monkeypatch.setattr(fund_data_service.yf, "Ticker", lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     failed = fund_data_service.refresh_fund_data(conn, [security])[0]
     assert not failed.refreshed
@@ -53,6 +58,14 @@ def test_provider_sector_weights_do_not_add_top_holding_residual_twice(monkeypat
     assert fund_data_service.refresh_fund_data(conn, [security])[0].refreshed
     result = exposure_analysis(conn)
     assert [(row.label, row.value) for row in result.sector] == [("Technology", 100)]
+
+
+def test_expense_ratio_migration_corrects_previously_refreshed_yfinance_data():
+    conn, security = _conn()
+    conn.execute("INSERT INTO fund_metadata(security_id,provider,expense_ratio_percent,reviewed_at) VALUES (?, 'yfinance', 7, CURRENT_TIMESTAMP)", (security,))
+    conn.execute("DELETE FROM schema_migrations WHERE version = 10")
+    init_db(conn)
+    assert conn.execute("SELECT expense_ratio_percent FROM fund_metadata WHERE security_id=?", (security,)).fetchone()[0] == .07
 
 
 def test_alphabet_share_classes_merge_in_direct_and_look_through_analytics():

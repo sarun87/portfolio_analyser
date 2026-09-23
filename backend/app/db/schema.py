@@ -510,7 +510,14 @@ def _yfinance_fund_data(conn: sqlite3.Connection) -> None:
     """)
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data))
+def _yfinance_expense_ratio_unit(conn: sqlite3.Connection) -> None:
+    """Correct values written before yfinance ratios were treated as percentages."""
+    conn.execute("""UPDATE fund_metadata
+        SET expense_ratio_percent = expense_ratio_percent / 100.0
+        WHERE provider = 'yfinance' AND expense_ratio_percent IS NOT NULL""")
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data), (10, _yfinance_expense_ratio_unit))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
