@@ -38,6 +38,7 @@ SELECT
   s.sector,
   s.exchange,
   s.investment_country,
+  s.mfapi_scheme_code,
   p.snapshot_date,
   p.acquisition_date,
   p.lot_number,
@@ -86,6 +87,7 @@ def _position_from_row(conn: sqlite3.Connection, row, display_currency: str, rat
         sector=row["sector"],
         exchange=row["exchange"],
         investment_country=row["investment_country"],
+        mfapi_scheme_code=row["mfapi_scheme_code"],
         snapshot_date=row["snapshot_date"],
         acquisition_date=row["acquisition_date"],
         lot_number=row["lot_number"],
@@ -239,9 +241,10 @@ def create_position(conn: sqlite3.Connection, payload: PositionCreate) -> Positi
 def update_position(conn: sqlite3.Connection, position_id: int, payload: PositionUpdate) -> Position:
     existing = conn.execute(
         """
-        SELECT p.id, p.security_id, p.account_id, p.per_unit_fmv, p.total_fmv, a.broker_id
+        SELECT p.id, p.security_id, p.account_id, p.per_unit_fmv, p.total_fmv, a.broker_id, s.mfapi_scheme_code
         FROM positions p
         JOIN accounts a ON a.id = p.account_id
+        JOIN securities s ON s.id = p.security_id
         WHERE p.id = ?
         """,
         (position_id,),
@@ -257,6 +260,17 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
     sector = _clean_required(payload.sector, "Sector")
     snapshot_date = _clean_required(payload.snapshot_date, "Snapshot date")
     currency = _validate_currency(payload.currency)
+    from backend.app.services.mfapi_service import fetch_latest, is_indian_mutual_fund
+    eligible_mfapi = is_indian_mutual_fund(security_type, payload.investment_country)
+    scheme_code = _clean_optional(payload.mfapi_scheme_code)
+    scheme_code_supplied = "mfapi_scheme_code" in payload.model_fields_set
+    # Validate only an actual code change. Existing saved codes are included by
+    # the normal edit form and must not make unrelated edits depend on MFAPI.
+    next_scheme_code = scheme_code if scheme_code_supplied else existing["mfapi_scheme_code"]
+    if next_scheme_code and eligible_mfapi and next_scheme_code != existing["mfapi_scheme_code"]:
+        # Validate before any database write so an invalid manual override does
+        # not partially apply a position edit.
+        fetch_latest(next_scheme_code)
     symbol = _clean_optional(payload.symbol.upper() if payload.symbol else None)
     acquisition_date = _clean_optional(payload.acquisition_date)
     lot_number = _clean_optional(payload.lot_number)
@@ -290,6 +304,7 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
             sector = ?,
             exchange = ?,
             investment_country = ?,
+            mfapi_scheme_code = ?,
             location_source = 'manual',
             location_resolved_at = CURRENT_TIMESTAMP,
             classification_source = 'manual',
@@ -305,6 +320,7 @@ def update_position(conn: sqlite3.Connection, position_id: int, payload: Positio
             sector,
             _clean_required(payload.exchange, "Exchange"),
             _clean_required(payload.investment_country, "Investment country"),
+            next_scheme_code if eligible_mfapi else None,
             0 if security_type.lower() == "cash" else 1,
             existing["security_id"],
         ),

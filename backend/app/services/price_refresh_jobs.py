@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 
 from backend.app.db.database import get_connection
 from backend.app.services.models import PriceRefreshJobStatus, PriceRefreshResult
-from backend.app.services.price_service import apply_quote_result, fetch_security_quote
+from backend.app.services.mfapi_service import fetch_schemes, is_indian_mutual_fund
+from backend.app.services.price_service import apply_quote_result, fetch_indian_mutual_fund_quote, fetch_security_quote, is_google_finance_symbol
 
 
 @dataclass
 class _Job:
     job_id: str
-    items: list[tuple[int, str, str | None]]
+    items: list[tuple[int, str | None, str | None, str, str, str, str | None]]
     status: str = "queued"
     completed: int = 0
     succeeded: int = 0
@@ -46,15 +47,16 @@ class PriceRefreshJobManager:
         # Snapshot first, while the DB is unlocked and only for a short read.
         with get_connection() as conn:
             rows = conn.execute("""
-                SELECT DISTINCT s.id, s.symbol, s.exchange FROM securities s
+                SELECT DISTINCT s.id, s.symbol, s.exchange, s.security_type, s.investment_country, s.name, s.mfapi_scheme_code FROM securities s
                 JOIN positions p ON p.security_id = s.id
-                WHERE s.price_refresh_supported = 1 AND s.symbol IS NOT NULL
-                ORDER BY s.symbol
+                WHERE s.price_refresh_supported = 1
+                  AND (s.symbol IS NOT NULL OR (LOWER(s.security_type) = 'mutual fund' AND LOWER(s.investment_country) = 'india'))
+                ORDER BY s.name
             """).fetchall()
         with self._lock:
             if self._active and self._active.status in {"queued", "running"}:
                 raise RuntimeError("A price refresh job is already active.")
-            job = _Job(str(uuid.uuid4()), [(int(r["id"]), r["symbol"], r["exchange"]) for r in rows])
+            job = _Job(str(uuid.uuid4()), [(int(r["id"]), r["symbol"], r["exchange"], r["security_type"], r["investment_country"], r["name"], r["mfapi_scheme_code"]) for r in rows])
             self._active = job
             self._jobs[job.job_id] = job
             thread = threading.Thread(target=self._run, args=(job,), daemon=True, name="price-refresh")
@@ -88,7 +90,7 @@ class PriceRefreshJobManager:
                         security_id=security_id, symbol=symbol, refreshed=False,
                         message="Refresh cancelled.",
                     )
-                    for security_id, symbol, _exchange in job.items
+                    for security_id, symbol, _exchange, _type, _country, _name, _code in job.items
                     if security_id not in completed_ids
                 )
             return self._status(job)
@@ -106,6 +108,13 @@ class PriceRefreshJobManager:
                 job.status = "completed"
             return
         try:
+            schemes = None
+            if any(is_indian_mutual_fund(item[3], item[4]) and not is_google_finance_symbol(item[1]) and not item[6] for item in job.items):
+                try:
+                    schemes = fetch_schemes()
+                except Exception:
+                    # Individual MFAPI fetches will return a precise failure.
+                    schemes = []
             with ThreadPoolExecutor(max_workers=3, thread_name_prefix="quote-fetch") as executor:
                 iterator = iter(job.items)
                 futures = {}
@@ -117,10 +126,11 @@ class PriceRefreshJobManager:
                         item = next(iterator)
                     except StopIteration:
                         return False
-                    future = executor.submit(fetch_security_quote, *item)
+                    security_id, symbol, exchange, security_type, country, name, scheme_code = item
+                    future = executor.submit(fetch_indian_mutual_fund_quote, security_id, symbol, name, scheme_code, schemes) if is_indian_mutual_fund(security_type, country) and not is_google_finance_symbol(symbol) else executor.submit(fetch_security_quote, security_id, symbol, exchange)
                     futures[future] = item
                     with self._lock:
-                        job.current_symbols.add(item[1])
+                        job.current_symbols.add(symbol or name)
                     return True
                 for _ in range(3):
                     if not submit_next(): break
@@ -129,7 +139,7 @@ class PriceRefreshJobManager:
                     for future in done:
                         item = futures.pop(future)
                         with self._lock:
-                            job.current_symbols.discard(item[1])
+                            job.current_symbols.discard(item[1] or item[5])
                             cancelled = job.cancelled
                         if cancelled:
                             continue

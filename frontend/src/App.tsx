@@ -1142,6 +1142,7 @@ type PositionDraft = {
   sector: string;
   exchange: string;
   investment_country: string;
+  mfapi_scheme_code: string;
   snapshot_date: string;
   acquisition_date: string;
   lot_number: string;
@@ -1169,6 +1170,7 @@ function emptyManualPosition(brokers: Broker[]): ManualPositionDraft {
     sector: "Unclassified",
     exchange: "Unresolved",
     investment_country: "Unresolved",
+    mfapi_scheme_code: "",
     snapshot_date: new Date().toISOString().slice(0, 10),
     acquisition_date: "",
     lot_number: "",
@@ -1191,6 +1193,7 @@ function draftFromPosition(position: Position): PositionDraft {
     sector: position.sector || "Unclassified",
     exchange: position.exchange || "Unresolved",
     investment_country: position.investment_country || "Unresolved",
+    mfapi_scheme_code: position.mfapi_scheme_code || "",
     snapshot_date: position.snapshot_date || "",
     acquisition_date: position.acquisition_date || "",
     lot_number: position.lot_number || "",
@@ -1243,6 +1246,7 @@ function payloadFromDraft(draft: PositionDraft): PositionUpdatePayload {
     sector: draft.sector.trim() || "Unclassified",
     exchange: draft.exchange.trim() || "Unresolved",
     investment_country: draft.investment_country.trim() || "Unresolved",
+    mfapi_scheme_code: optionalText(draft.mfapi_scheme_code),
     snapshot_date: draft.snapshot_date,
     acquisition_date: optionalText(draft.acquisition_date),
     lot_number: optionalText(draft.lot_number),
@@ -1253,6 +1257,14 @@ function payloadFromDraft(draft: PositionDraft): PositionUpdatePayload {
     total_fmv: optionalNumber(draft.total_fmv, "Total FMV"),
     currency: draft.currency
   };
+}
+
+function isIndiaMutualFundDraft(draft: Pick<PositionDraft, "security_type" | "investment_country">) {
+  return draft.security_type.trim().toLowerCase() === "mutual fund" && draft.investment_country.trim().toLowerCase() === "india";
+}
+
+function isGoogleFinanceSymbol(symbol: string) {
+  return symbol.trim().split(":").filter(Boolean).length === 2 && symbol.trim().split(":").length === 2;
 }
 
 function synchronizePositionDraft(draft: PositionDraft, patch: Partial<PositionDraft>): PositionDraft {
@@ -1448,7 +1460,7 @@ export function PositionsTable({
   }
 
   function canRefreshPrice(position: Position) {
-    return Boolean(position.symbol?.trim()) && position.security_type.trim().toLowerCase() !== "cash";
+    return (position.security_type.trim().toLowerCase() === "mutual fund" && position.investment_country.trim().toLowerCase() === "india") || (Boolean(position.symbol?.trim()) && position.security_type.trim().toLowerCase() !== "cash");
   }
 
   function updateManualDraft(patch: Partial<ManualPositionDraft>) {
@@ -1492,7 +1504,15 @@ export function PositionsTable({
       ...current,
       ...Object.fromEntries(
         (selectedPositionIds.has(position.id) ? filtered.filter((item) => selectedPositionIds.has(item.id)) : [position])
-          .map((item) => [item.id, synchronizePositionDraft(current[item.id] || draftFromPosition(item), patch)])
+          .map((item) => {
+            const draft = current[item.id] || draftFromPosition(item);
+            const nextPatch = { ...patch };
+            const candidate = { ...draft, ...nextPatch };
+            // Changing away from an India MF must not leave a hidden scheme
+            // code in the payload, which would block the edit server-side.
+            if (!isIndiaMutualFundDraft(candidate) || isGoogleFinanceSymbol(candidate.symbol)) nextPatch.mfapi_scheme_code = "";
+            return [item.id, synchronizePositionDraft(draft, nextPatch)];
+          })
       )
     }));
   }
@@ -1695,6 +1715,7 @@ export function PositionsTable({
                       <div className="stackedInputs">
                         <input className={inputClass(position, "symbol")} aria-label="Symbol" value={draft.symbol} onChange={(event) => updateDraft(position, { symbol: event.target.value })} placeholder="Symbol" />
                         <input className={inputClass(position, "security_name")} aria-label="Security name" value={draft.security_name} onChange={(event) => updateDraft(position, { security_name: event.target.value })} placeholder="Security name" />
+                        {isIndiaMutualFundDraft(draft) && !isGoogleFinanceSymbol(draft.symbol) && <input className={inputClass(position, "mfapi_scheme_code")} aria-label={`MFAPI scheme code for ${position.security_name}`} value={draft.mfapi_scheme_code} onChange={(event) => updateDraft(position, { mfapi_scheme_code: event.target.value })} placeholder="MFAPI scheme code (optional)" />}
                       </div>
                     ) : (
                       <>
@@ -3022,10 +3043,17 @@ function Settings({
           </div>
         </div>
       </div>
+      <MfapiSchemeCacheSettings />
       <PasswordSettings />
       </>}
     </section>
   );
+}
+
+function MfapiSchemeCacheSettings() {
+  const [busy, setBusy] = useState(false); const [message, setMessage] = useState<string | null>(null); const [error, setError] = useState<string | null>(null);
+  async function refresh() { setBusy(true); setError(null); setMessage(null); try { const result = await api.refreshMfapiSchemes(); setMessage(`Downloaded ${number(result.scheme_count)} MFAPI schemes. Future India mutual-fund matching will use the local cache.`); } catch (err) { setError(err instanceof Error ? err.message : "Could not update the MFAPI scheme list."); } finally { setBusy(false); } }
+  return <section className="panel"><h2>India mutual-fund scheme list</h2><p>MFAPI scheme names and codes are cached locally in the application data folder. Refresh this list when newly launched or renamed schemes need to be matched.</p><button className="secondary" disabled={busy} onClick={refresh}><RefreshCw size={16}/>{busy ? "Downloading…" : "Update MFAPI scheme list"}</button>{message && <div className="notice">{message}</div>}{error && <div className="error">{error}</div>}</section>;
 }
 
 const emptyBrokerDraft = (): BrokerDraft => ({ name: "", default_currency: "USD", notes: "", locked_fields: [], header_signature: [], mappings: {} });
@@ -3412,7 +3440,7 @@ export function FundDataPage() {
   useEffect(()=>{load().catch(e=>setError(e.message));},[]);
   async function refresh(ids:number[]){if(!ids.length)return;setBusy(true);setError(null);try{const results=await api.refreshFundData(ids);const failures=results.filter(r=>!r.refreshed);const detail=failures.map(r=>`${r.security_name}: ${r.message}`).join(" | ");setMessage(`${results.filter(r=>r.refreshed).length} refreshed${detail?`; ${detail}`:""}`);await load();}catch(e){setError(e instanceof Error?e.message:"Fund refresh failed.");}finally{setBusy(false);}}
   const toggle=(id:number)=>setSelected(current=>{const next=new Set(current);next.has(id)?next.delete(id):next.add(id);return next;});
-  return <section className="stack"><section className="panel"><div className="panelHeader"><div><p className="eyebrow">User-initiated Yahoo Finance refresh</p><h2>Fund data</h2><p className="disclosure">Only current ETFs, ETF-containing security types, and Mutual Funds are listed. LSE funds automatically use a .L Yahoo symbol.</p></div><button disabled={busy||selected.size===0} onClick={()=>refresh([...selected])}><RefreshCw size={15}/>{busy?"Refreshing…":`Refresh selected (${selected.size})`}</button></div>{message&&<div className="notice">{message}</div>}{error&&<div className="error">{error}</div>}<div className="tableWrap"><table><thead><tr><th><input aria-label="Select all funds" type="checkbox" checked={funds.length>0&&selected.size===funds.length} onChange={e=>setSelected(e.target.checked?new Set(funds.map(f=>f.security_id)):new Set())}/></th><th>Fund</th><th>Yahoo ticker</th><th>Last refreshed</th><th>Holdings</th><th>Sectors</th><th>30-day OHLCV</th><th>Expense ratio</th><th></th></tr></thead><tbody>{funds.map(f=><tr key={f.security_id}><td><input aria-label={`Select ${f.security_name}`} type="checkbox" checked={selected.has(f.security_id)} onChange={()=>toggle(f.security_id)}/></td><td>{f.security_name}<br/><small>{f.security_type}</small></td><td>{f.yahoo_symbol||"Missing ticker"}</td><td>{f.last_refreshed_at?.slice(0,10)||"Never"}</td><td>{f.holdings_count||"-"}</td><td>{f.sector_count||"-"}</td><td>{f.history_count||"-"}</td><td>{f.expense_ratio_percent==null?"-":pct(f.expense_ratio_percent)}</td><td><button className="secondary" disabled={busy} onClick={()=>refresh([f.security_id])}><RefreshCw size={14}/>Refresh</button></td></tr>)}</tbody></table></div>{funds.map(f=><details key={`detail-${f.security_id}`}><summary>{f.security_name} details</summary><p>Top holdings: {f.holdings.map(h=>`${h.name} (${pct(h.weight_percent)})`).join(", ")||"Unavailable"}</p><p>Sector weights: {Object.entries(f.sectors).map(([sector,weight])=>`${sector} (${pct(weight)})`).join(", ")||"Unavailable"}</p></details>)}{funds.flatMap(f=>f.warnings.map(w=><p className="disclosure" key={`${f.security_id}-${w}`}>{f.security_name}: {w}</p>))}</section></section>;
+  return <section className="stack"><section className="panel"><div className="panelHeader"><div><p className="eyebrow">User-initiated provider refresh</p><h2>Fund data</h2><p className="disclosure">Indian Mutual Funds use MFAPI NAVs; other funds use Yahoo Finance. LSE funds automatically use a .L Yahoo symbol.</p></div><button disabled={busy||selected.size===0} onClick={()=>refresh([...selected])}><RefreshCw size={15}/>{busy?"Refreshing…":`Refresh selected (${selected.size})`}</button></div>{message&&<div className="notice">{message}</div>}{error&&<div className="error">{error}</div>}<div className="tableWrap"><table><thead><tr><th><input aria-label="Select all funds" type="checkbox" checked={funds.length>0&&selected.size===funds.length} onChange={e=>setSelected(e.target.checked?new Set(funds.map(f=>f.security_id)):new Set())}/></th><th>Fund</th><th>Provider / identifier</th><th>Last refreshed</th><th>Holdings</th><th>Sectors</th><th>30-day OHLCV</th><th>Expense ratio</th><th></th></tr></thead><tbody>{funds.map(f=><tr key={f.security_id}><td><input aria-label={`Select ${f.security_name}`} type="checkbox" checked={selected.has(f.security_id)} onChange={()=>toggle(f.security_id)}/></td><td>{f.security_name}<br/><small>{f.security_type}</small></td><td>{f.provider||"yfinance"}<br/><small>{f.provider_identifier||f.yahoo_symbol||"Not resolved"}</small></td><td>{f.last_refreshed_at?.slice(0,10)||"Never"}</td><td>{f.holdings_count||"-"}</td><td>{f.sector_count||"-"}</td><td>{f.history_count||"-"}</td><td>{f.expense_ratio_percent==null?"-":pct(f.expense_ratio_percent)}</td><td><button className="secondary" disabled={busy} onClick={()=>refresh([f.security_id])}><RefreshCw size={14}/>Refresh</button></td></tr>)}</tbody></table></div>{funds.map(f=><details key={`detail-${f.security_id}`}><summary>{f.security_name} details</summary><p>Top holdings: {f.holdings.map(h=>`${h.name} (${pct(h.weight_percent)})`).join(", ")||"Unavailable"}</p><p>Sector weights: {Object.entries(f.sectors).map(([sector,weight])=>`${sector} (${pct(weight)})`).join(", ")||"Unavailable"}</p></details>)}{funds.flatMap(f=>f.warnings.map(w=><p className="disclosure" key={`${f.security_id}-${w}`}>{f.security_name}: {w}</p>))}</section></section>;
 }
 
 export function ExposurePage({positions, insights}:{positions:Position[]; insights?: Insights | null}) {
