@@ -85,7 +85,7 @@ from backend.app.services.models import (
     ExposureAnalysis, FundComposition, FundCompositionInput, PublicMetadataPreview, PublicMetadataAcceptance, FundMetadata, PeerResearch, FundHtmlSyncRequest,
     HistoryRefreshResult, ManualMarketSeriesInput, MarketHistoryInput, RiskAnalysis, RiskSettings,
     FeeAnalysis, FeeSettings, SecurityFee, SecurityFeeInput, PortfolioFee, PortfolioFeeInput, ScheduledExpense, ScheduledExpenseInput,
-    FundDataSecurity, FundDataRefreshRequest, FundDataRefreshResult,
+    FundDataSecurity, FundDataRefreshRequest, FundDataRefreshResult, MfapiSchemeCacheUpdate,
 )
 from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
 from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
@@ -122,6 +122,7 @@ from backend.app.services.exposure_service import (
     cached_public_preview, exposure_analysis, get_composition, preview_public_metadata, save_composition, accept_public_metadata, get_fund_metadata, research_peers, cached_peer_research,
 )
 from backend.app.services.fund_data_service import list_fund_data, refresh_fund_data
+from backend.app.services.mfapi_service import refresh_scheme_cache
 from backend.app.services.risk_service import (
     get_risk_settings, refresh_market_history, risk_analysis, save_manual_history, save_manual_market_series, save_risk_settings,
 )
@@ -516,6 +517,14 @@ def fund_data() -> list[FundDataSecurity]:
 def refresh_funds(payload: FundDataRefreshRequest) -> list[FundDataRefreshResult]:
     with get_connection() as conn:
         return refresh_fund_data(conn, payload.security_ids)
+
+
+@router.post("/mfapi/schemes/refresh", response_model=MfapiSchemeCacheUpdate)
+def refresh_mfapi_schemes() -> MfapiSchemeCacheUpdate:
+    try:
+        return MfapiSchemeCacheUpdate(**refresh_scheme_cache())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not update the MFAPI scheme list: {exc}") from exc
 
 
 @router.get("/fund-compositions/{security_id}", response_model=Optional[FundComposition])

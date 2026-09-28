@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS securities (
   price_refresh_supported INTEGER NOT NULL DEFAULT 1,
   exchange TEXT NOT NULL DEFAULT 'Unresolved',
   investment_country TEXT NOT NULL DEFAULT 'Unresolved',
+  mfapi_scheme_code TEXT,
   location_source TEXT,
   location_resolved_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -517,7 +518,13 @@ def _yfinance_expense_ratio_unit(conn: sqlite3.Connection) -> None:
         WHERE provider = 'yfinance' AND expense_ratio_percent IS NOT NULL""")
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data), (10, _yfinance_expense_ratio_unit))
+def _mfapi_indian_mutual_funds(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "securities", "mfapi_scheme_code", "TEXT")
+    _ensure_column(conn, "fund_refresh_status", "provider", "TEXT NOT NULL DEFAULT 'yfinance'")
+    _ensure_column(conn, "fund_refresh_status", "provider_identifier", "TEXT")
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data), (10, _yfinance_expense_ratio_unit), (11, _mfapi_indian_mutual_funds))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

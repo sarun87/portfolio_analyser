@@ -64,6 +64,21 @@ def test_google_finance_uses_the_primary_quote_not_a_sidebar_index():
         assert fetch_google_finance_price("CSPX:LON") == 827.78
 
 
+def test_google_finance_keeps_provider_qualified_mutual_fund_symbols_intact():
+    symbol = "ADIT_BSL_FLEX_1UV3YZW:MUTF_IN"
+    assert google_candidates(symbol, "NSE") == [symbol]
+    html = '<div class="YMlKec fxKbKc">123.45</div>'
+    with patch("backend.app.services.price_service.urllib.request.urlopen", return_value=HtmlResponse(html)) as opener:
+        assert fetch_google_finance_price(symbol) == 123.45
+    assert ":MUTF_IN" in opener.call_args.args[0].full_url
+
+
+def test_google_finance_parses_current_mutual_fund_quote_markup():
+    html = '<span jsname="Pdsbrc"><span>26,689.85</span></span><div class="N6SYTe"><span jsname="Pdsbrc" class=""><span>₹1,915.87</span></span></div>'
+    with patch("backend.app.services.price_service.urllib.request.urlopen", return_value=HtmlResponse(html)):
+        assert fetch_google_finance_price("ADIT_BSL_FLEX_1UV3YZW:MUTF_IN") == 1915.87
+
+
 @pytest.fixture
 def priced_security():
     conn = sqlite3.connect(":memory:")

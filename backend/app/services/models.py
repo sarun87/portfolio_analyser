@@ -161,6 +161,7 @@ class Position(BaseModel):
     sector: str
     exchange: str
     investment_country: str
+    mfapi_scheme_code: Optional[str] = None
     snapshot_date: str
     acquisition_date: Optional[str] = None
     lot_number: Optional[str] = None
@@ -190,6 +191,7 @@ class PositionUpdate(BaseModel):
     sector: str = "Unclassified"
     exchange: str = "Unresolved"
     investment_country: str = "Unresolved"
+    mfapi_scheme_code: Optional[str] = None
     snapshot_date: str
     acquisition_date: Optional[str] = None
     lot_number: Optional[str] = None
@@ -216,6 +218,8 @@ class PriceRefreshResult(BaseModel):
     symbol: Optional[str]
     refreshed: bool
     price: Optional[float] = None
+    price_date: Optional[str] = None
+    mfapi_scheme_code: Optional[str] = None
     message: str
 
 
@@ -805,6 +809,8 @@ class FundDataSecurity(BaseModel):
     security_type: str
     symbol: Optional[str] = None
     yahoo_symbol: Optional[str] = None
+    provider: str = "yfinance"
+    provider_identifier: Optional[str] = None
     last_refreshed_at: Optional[str] = None
     holdings_count: int = 0
     sector_count: int = 0
@@ -826,6 +832,11 @@ class FundDataRefreshResult(BaseModel):
     refreshed: bool
     message: str
     warnings: list[str] = Field(default_factory=list)
+
+
+class MfapiSchemeCacheUpdate(BaseModel):
+    scheme_count: int
+    updated_at: str
 
 
 class PeerCandidate(BaseModel):

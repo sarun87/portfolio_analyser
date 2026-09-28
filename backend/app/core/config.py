@@ -7,6 +7,7 @@ DATA_DIR = ROOT_DIR / "data"
 LOG_DIR = ROOT_DIR / "logs"
 DATABASE_PATH = DATA_DIR / "portfolio.db.encrypted"
 AUTH_CONFIG_PATH = DATA_DIR / "auth.json"
+MFAPI_SCHEMES_PATH = DATA_DIR / "mfapi_schemes.json"
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 APP_ENV = os.getenv("PORTFOLIO_ENV", "development").lower()
 SESSION_COOKIE_SECURE = os.getenv("PORTFOLIO_SESSION_COOKIE_SECURE", "true" if APP_ENV == "production" else "false").lower() == "true"

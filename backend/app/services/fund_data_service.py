@@ -11,6 +11,9 @@ import yfinance as yf
 
 from backend.app.services.exposure_service import _store_metadata, save_composition
 from backend.app.services.location_service import normalize_exchange
+from backend.app.services.mfapi_service import PROVIDER as MFAPI_PROVIDER, fetch_latest as fetch_mfapi_latest, fetch_schemes, is_indian_mutual_fund, resolve_scheme
+from backend.app.services.price_service import GOOGLE_PROVIDER, fetch_security_quote, is_google_finance_symbol
+from backend.app.services.repositories import record_price
 from backend.app.services.models import (
     FundCompositionInput, FundConstituentInput, FundDataHolding,
     FundDataRefreshResult, FundDataSecurity,
@@ -120,7 +123,7 @@ def _history(frame: Any) -> list[tuple[str, float | None, float | None, float | 
 
 
 def _fund_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("""SELECT DISTINCT s.id, s.name, s.symbol, s.security_type, s.exchange
+    return conn.execute("""SELECT DISTINCT s.id, s.name, s.symbol, s.security_type, s.exchange, s.investment_country, s.mfapi_scheme_code
         FROM securities s JOIN positions p ON p.security_id=s.id
         WHERE p.snapshot_date=(SELECT MAX(p2.snapshot_date) FROM positions p2 WHERE p2.account_id=p.account_id)
         ORDER BY s.name""").fetchall()
@@ -141,14 +144,49 @@ def list_fund_data(conn: sqlite3.Connection) -> list[FundDataSecurity]:
             resolved = yahoo_symbol(row["symbol"], row["exchange"])
         except ValueError:
             resolved = None
+        indian_mf = is_indian_mutual_fund(row["security_type"], row["investment_country"])
+        google_symbol = indian_mf and is_google_finance_symbol(row["symbol"])
+        default_provider = GOOGLE_PROVIDER if google_symbol else MFAPI_PROVIDER if indian_mf else PROVIDER
+        default_identifier = row["symbol"] if google_symbol else row["mfapi_scheme_code"] if indian_mf else resolved
         result.append(FundDataSecurity(
             security_id=row["id"], security_name=row["name"], security_type=row["security_type"], symbol=row["symbol"],
-            yahoo_symbol=status["yahoo_symbol"] if status else resolved, last_refreshed_at=status["refreshed_at"] if status else None,
+            yahoo_symbol=status["yahoo_symbol"] if status else resolved, provider=status["provider"] if status and status["provider"] else default_provider,
+            provider_identifier=status["provider_identifier"] if status and status["provider_identifier"] else default_identifier, last_refreshed_at=status["refreshed_at"] if status else None,
             holdings_count=len(holdings), sector_count=len(sectors), history_count=history_count,
             expense_ratio_percent=metadata["expense_ratio_percent"] if metadata else None,
             warnings=json.loads(status["warnings_json"]) if status else [], holdings=holdings, sectors=sectors,
         ))
     return result
+
+
+def _refresh_one_mfapi(conn: sqlite3.Connection, row: sqlite3.Row, schemes: list[dict[str, Any]] | None) -> FundDataRefreshResult:
+    code = row["mfapi_scheme_code"]
+    if not code:
+        if schemes is None:
+            raise ValueError("MFAPI scheme list is unavailable.")
+        code, _ = resolve_scheme(row["name"], schemes)
+    quote = fetch_mfapi_latest(code)
+    now = datetime.now(timezone.utc).isoformat()
+    # MFAPI latest supplies a NAV only. Existing composition and Yahoo-derived
+    # facts/history remain intact rather than being erased by this refresh.
+    warnings = ["MFAPI provides latest NAV only; existing holdings, sectors, and fund facts were retained."]
+    conn.execute("UPDATE securities SET mfapi_scheme_code=? WHERE id=?", (quote.scheme_code, row["id"]))
+    record_price(conn, row["id"], quote.nav, MFAPI_PROVIDER, quote.nav_date)
+    conn.execute("""INSERT INTO fund_refresh_status(security_id,yahoo_symbol,provider,provider_identifier,refreshed_at,warnings_json) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(security_id) DO UPDATE SET provider=excluded.provider, provider_identifier=excluded.provider_identifier, refreshed_at=excluded.refreshed_at, warnings_json=excluded.warnings_json""", (row["id"], row["symbol"] or quote.scheme_code, MFAPI_PROVIDER, quote.scheme_code, now, json.dumps(warnings)))
+    return FundDataRefreshResult(security_id=row["id"], security_name=row["name"], yahoo_symbol=None, refreshed=True, message="MFAPI NAV refreshed.", warnings=warnings)
+
+
+def _refresh_one_google_price(conn: sqlite3.Connection, row: sqlite3.Row) -> FundDataRefreshResult:
+    result = fetch_security_quote(row["id"], row["symbol"], row["exchange"])
+    if not result.refreshed or result.price is None:
+        raise ValueError(result.message)
+    now = datetime.now(timezone.utc).isoformat()
+    warnings = ["Google Finance provides latest price only; existing holdings, sectors, and fund facts were retained."]
+    record_price(conn, row["id"], result.price, GOOGLE_PROVIDER)
+    conn.execute("""INSERT INTO fund_refresh_status(security_id,yahoo_symbol,provider,provider_identifier,refreshed_at,warnings_json) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(security_id) DO UPDATE SET provider=excluded.provider, provider_identifier=excluded.provider_identifier, refreshed_at=excluded.refreshed_at, warnings_json=excluded.warnings_json""", (row["id"], row["symbol"], GOOGLE_PROVIDER, row["symbol"], now, json.dumps(warnings)))
+    return FundDataRefreshResult(security_id=row["id"], security_name=row["name"], yahoo_symbol=None, refreshed=True, message="Google Finance price refreshed.", warnings=warnings)
 
 
 def _refresh_one(conn: sqlite3.Connection, row: sqlite3.Row) -> FundDataRefreshResult:
@@ -178,8 +216,8 @@ def _refresh_one(conn: sqlite3.Connection, row: sqlite3.Row) -> FundDataRefreshR
     conn.execute("DELETE FROM fund_ohlcv_history WHERE fund_security_id=?", (row["id"],))
     conn.executemany("""INSERT INTO fund_ohlcv_history(fund_security_id,price_date,open,high,low,close,adjusted_close,volume)
         VALUES(?,?,?,?,?,?,?,?)""", [(row["id"], *point) for point in history])
-    conn.execute("""INSERT INTO fund_refresh_status(security_id,yahoo_symbol,refreshed_at,warnings_json) VALUES(?,?,?,?)
-        ON CONFLICT(security_id) DO UPDATE SET yahoo_symbol=excluded.yahoo_symbol, refreshed_at=excluded.refreshed_at, warnings_json=excluded.warnings_json""", (row["id"], symbol, now, json.dumps(warnings)))
+    conn.execute("""INSERT INTO fund_refresh_status(security_id,yahoo_symbol,provider,provider_identifier,refreshed_at,warnings_json) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(security_id) DO UPDATE SET yahoo_symbol=excluded.yahoo_symbol, provider=excluded.provider, provider_identifier=excluded.provider_identifier, refreshed_at=excluded.refreshed_at, warnings_json=excluded.warnings_json""", (row["id"], symbol, PROVIDER, symbol, now, json.dumps(warnings)))
     return FundDataRefreshResult(security_id=row["id"], security_name=row["name"], yahoo_symbol=symbol, refreshed=True,
                                  message="Fund data refreshed.", warnings=warnings)
 
@@ -187,6 +225,7 @@ def _refresh_one(conn: sqlite3.Connection, row: sqlite3.Row) -> FundDataRefreshR
 def refresh_fund_data(conn: sqlite3.Connection, security_ids: list[int]) -> list[FundDataRefreshResult]:
     rows = {row["id"]: row for row in _fund_rows(conn)}
     results = []
+    schemes: list[dict[str, Any]] | None = None
     for security_id in dict.fromkeys(security_ids):
         row = rows.get(security_id)
         if not row or not _eligible_type(row["security_type"]):
@@ -194,7 +233,14 @@ def refresh_fund_data(conn: sqlite3.Connection, security_ids: list[int]) -> list
             continue
         conn.execute("SAVEPOINT fund_refresh")
         try:
-            result = _refresh_one(conn, row)
+            if is_indian_mutual_fund(row["security_type"], row["investment_country"]) and is_google_finance_symbol(row["symbol"]):
+                result = _refresh_one_google_price(conn, row)
+            elif is_indian_mutual_fund(row["security_type"], row["investment_country"]):
+                if not row["mfapi_scheme_code"] and schemes is None:
+                    schemes = fetch_schemes()
+                result = _refresh_one_mfapi(conn, row, schemes)
+            else:
+                result = _refresh_one(conn, row)
         except Exception as exc:
             conn.execute("ROLLBACK TO SAVEPOINT fund_refresh")
             result = FundDataRefreshResult(security_id=row["id"], security_name=row["name"], refreshed=False,

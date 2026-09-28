@@ -159,6 +159,7 @@ export const api = {
   lookThrough: () => request<ExposureAnalysis>("/api/look-through"),
   fundData: () => request<FundDataSecurity[]>("/api/fund-data"),
   refreshFundData: (security_ids:number[]) => request<FundDataRefreshResult[]>("/api/fund-data/refresh", {method:"POST", headers:jsonHeaders, body:JSON.stringify({security_ids})}),
+  refreshMfapiSchemes: () => request<{scheme_count:number;updated_at:string}>("/api/mfapi/schemes/refresh", {method:"POST"}),
   saveFundComposition: (id:number,payload:FundCompositionInput) => request<FundComposition>(`/api/fund-compositions/${id}`,{method:"PUT",headers:jsonHeaders,body:JSON.stringify(payload)}),
   previewPublicMetadata: (id:number, payload: { source: "yahoo_html" | "google_finance_html" | "custom_url" | "ishares_csv" | "vanguard_csv"; url?: string } = {source:"yahoo_html"}) => request<PublicMetadataPreview>(`/api/public-metadata/${id}/preview`,{method:"POST",headers:jsonHeaders,body:JSON.stringify(payload)}),
   acceptPublicComposition: (id:number) => request<PublicMetadataAcceptance>(`/api/fund-compositions/${id}/accept-public`,{method:"POST"}),
