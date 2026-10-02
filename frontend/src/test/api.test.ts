@@ -36,4 +36,21 @@ describe("cookie-authenticated API requests", () => {
     expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test");
     expect(init.body).toBe(JSON.stringify({ new_passphrase: "new password" }));
   });
+
+  it("inspects an uploaded database snapshot using a protected multipart request", async () => {
+    const file = new File(["snapshot"], "portfolio.db", { type: "application/vnd.sqlite3" });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ categories: ["broker-definitions"] })
+    });
+
+    const result = await api.inspectDatabase(file);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/database/inspect");
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("file")).toBe(file);
+    expect(result.categories).toEqual(["broker-definitions"]);
+  });
 });

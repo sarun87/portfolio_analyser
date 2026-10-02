@@ -262,6 +262,11 @@ export const api = {
       method: "POST"
     }),
   exportDatabase: (categories: string[]) => download("/api/database/export", { categories }),
+  inspectDatabase: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return upload<{ categories: string[] }>("/api/database/inspect", form);
+  },
   importDatabase: (file: File, categories: string[]) => {
     const form = new FormData();
     form.append("file", file);

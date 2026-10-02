@@ -108,7 +108,12 @@ from backend.app.services.repositories import (
     clean_static_account_data,
     get_brokers,
 )
-from backend.app.services.database_transfer_service import TransferError, create_export_file, import_export
+from backend.app.services.database_transfer_service import (
+    TransferError,
+    create_export_file,
+    import_export,
+    inspect_export,
+)
 from backend.app.services.broker_service import delete_broker, preview_broker_configuration, save_broker
 from backend.app.services.insight_service import (
     create_goal, delete_goal, get_assumptions, insights, list_goals_summary, list_targets,
@@ -889,6 +894,31 @@ def export_database(payload: DatabaseTransferRequest) -> FileResponse:
         filename="portfolio-analyser-export.db",
         background=BackgroundTask(snapshot.unlink, missing_ok=True),
     )
+
+
+@router.post("/database/inspect")
+async def inspect_database(file: UploadFile = File(...)) -> dict[str, list[str]]:
+    """Validate an uploaded export and report the categories it contains."""
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+            temporary = Path(handle.name)
+            total = 0
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > 100 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Import files must be 100 MB or smaller.")
+                handle.write(chunk)
+        try:
+            with get_connection() as conn:
+                categories = inspect_export(conn, temporary)
+        except TransferError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"categories": categories}
+    finally:
+        await file.close()
+        if temporary:
+            temporary.unlink(missing_ok=True)
 
 
 @router.post("/database/import")

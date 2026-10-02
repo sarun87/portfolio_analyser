@@ -1,3 +1,5 @@
+![Static Badge](https://img.shields.io/badge/Built%20with%20AI-blue)
+
 # Portfolio Analyser
 
 Local-first portfolio statement analyser for configurable CSV broker exports.
