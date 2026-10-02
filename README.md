@@ -1,4 +1,6 @@
-![Static Badge](https://img.shields.io/badge/Built%20with%20AI-blue)
+![Static Badge](https://img.shields.io/badge/Built%20with%20AI-blue)   [![Backend Tests Status](https://github.com/sarun87/portfolio-analyser/actions/workflows/python-app.yml/badge.svg?branch=main)](https://github.com/sarun87/portfolio-analyser/actions/workflows/python-app.yml)   [![Frontend Tests Status](https://github.com/sarun87/portfolio-analyser/actions/workflows/node.js.yml/badge.svg?branch=main)](https://github.com/sarun87/portfolio-analyser/actions/workflows/node.js.yml)   [![Docker Build Status](https://github.com/sarun87/portfolio-analyser/actions/workflows/docker-image.yml/badge.svg?branch=main)](https://github.com/sarun87/portfolio-analyser/actions/workflows/docker-image.yml)
+
+
 
 # Portfolio Analyser
 
