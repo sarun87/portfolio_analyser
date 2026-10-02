@@ -3281,6 +3281,7 @@ function PasswordSettings() {
 
 const databaseTransferCategories = [
   ["brokerage", "Brokerage portfolio"],
+  ["broker-definitions", "Broker definitions only (no accounts or securities)"],
   ["bank-accounts", "Bank accounts"],
   ["retirement-accounts", "Retirement accounts"],
   ["other-static-accounts", "Other static accounts"],
@@ -3291,18 +3292,53 @@ const databaseTransferCategories = [
 ] as const;
 
 function DatabaseOperations({ onCleaned, onReset }: { onCleaned: (message: string) => Promise<void>; onReset: () => void }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set(databaseTransferCategories.map(([id]) => id)));
+  const [exportSelected, setExportSelected] = useState<Set<string>>(new Set(databaseTransferCategories.map(([id]) => id)));
+  const [availableImportCategories, setAvailableImportCategories] = useState<string[] | null>(null);
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
   const [file, setFile] = useState<File | null>(null);
+  const [inspecting, setInspecting] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const categories = [...selected];
-  const toggle = (id: string) => setSelected(current => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const inspectionSequence = useRef(0);
+  const exportCategories = [...exportSelected];
+  const importCategories = [...importSelected];
+  const toggleExport = (id: string) => setExportSelected(current => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggleImport = (id: string) => setImportSelected(current => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  async function inspectSelectedFile(nextFile: File | null) {
+    const sequence = ++inspectionSequence.current;
+    setFile(nextFile);
+    setAvailableImportCategories(null);
+    setImportSelected(new Set());
+    setConfirmation("");
+    setError(null);
+    setMessage(null);
+    if (!nextFile) {
+      setInspecting(false);
+      return;
+    }
+    setInspecting(true);
+    try {
+      const inspection = await api.inspectDatabase(nextFile);
+      if (sequence !== inspectionSequence.current) return;
+      const available = databaseTransferCategories
+        .map(([id]) => id)
+        .filter(id => inspection.categories.includes(id));
+      setAvailableImportCategories(available);
+      setImportSelected(new Set(available));
+    } catch (err) {
+      if (sequence === inspectionSequence.current) {
+        setError(err instanceof Error ? err.message : "Could not inspect the selected export.");
+      }
+    } finally {
+      if (sequence === inspectionSequence.current) setInspecting(false);
+    }
+  }
   async function exportSnapshot() {
     setBusy(true); setError(null); setMessage(null);
     try {
-      const blob = await api.exportDatabase(categories);
+      const blob = await api.exportDatabase(exportCategories);
       const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
       anchor.href = url; anchor.download = "portfolio-analyser-export.db"; anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
@@ -3311,10 +3347,10 @@ function DatabaseOperations({ onCleaned, onReset }: { onCleaned: (message: strin
     finally { setBusy(false); }
   }
   async function importSnapshot() {
-    if (!file || confirmation.trim().toUpperCase() !== "IMPORT") return;
+    if (!file || inspecting || importCategories.length === 0 || confirmation.trim().toUpperCase() !== "IMPORT") return;
     setBusy(true); setError(null); setMessage(null);
     try {
-      const result = await api.importDatabase(file, categories);
+      const result = await api.importDatabase(file, importCategories);
       const summary = Object.entries(result.record_counts).map(([category, count]) => `${category}: ${count}`).join(", ");
       setConfirmation(""); setMessage(`Import completed. ${summary || "No records imported."}`); await onCleaned("Database import completed.");
     } catch (err) { setError(err instanceof Error ? err.message : "Could not import the database."); }
@@ -3323,13 +3359,18 @@ function DatabaseOperations({ onCleaned, onReset }: { onCleaned: (message: strin
   return <section className="stack">
     <section className="panel">
       <h2>Export database</h2><p className="disclosure">This creates an unencrypted SQLite file. Anyone with the download can read its included financial and account data.</p>
-      <div className="cleanGrid">{databaseTransferCategories.map(([id, label]) => <label className="cleanOption" key={id}><span><input type="checkbox" checked={selected.has(id)} onChange={() => toggle(id)} /> {label}</span></label>)}</div>
-      <button disabled={busy || categories.length === 0} onClick={exportSnapshot}><Download size={15}/>Export selected data</button>
+      <div className="cleanGrid">{databaseTransferCategories.map(([id, label]) => <label className="cleanOption" key={id}><span><input type="checkbox" checked={exportSelected.has(id)} disabled={busy} onChange={() => toggleExport(id)} /> {label}</span></label>)}</div>
+      <button disabled={busy || exportCategories.length === 0} onClick={exportSnapshot}><Download size={15}/>Export selected data</button>
     </section>
     <section className="panel dangerPanel">
-      <h2>Import database</h2><p>Import replaces the selected categories in this database. Unselected data remains unchanged. Incompatible, corrupt, or newer-schema exports are rejected before any changes are made.</p>
-      <div className="formGrid"><label>Plain SQLite export<input type="file" accept=".db,application/vnd.sqlite3,application/x-sqlite3" onChange={event => setFile(event.target.files?.[0] || null)} /></label><label>Type IMPORT to replace selected data<input value={confirmation} onChange={event => setConfirmation(event.target.value)} placeholder="IMPORT" /></label></div>
-      <button className="dangerButton" disabled={busy || !file || categories.length === 0 || confirmation.trim().toUpperCase() !== "IMPORT"} onClick={importSnapshot}>Import and replace selected data</button>
+      <h2>Import database</h2><p>Choose categories from the selected snapshot to import; unselected data remains unchanged. Broker definitions are merged by name: matching brokers are updated, missing brokers are added, and other existing brokers are kept. This option does not import or change accounts, securities, or positions. Incompatible, corrupt, or newer-schema exports are rejected before any changes are made.</p>
+      <div className="formGrid"><label>Plain SQLite export<input type="file" accept=".db,application/vnd.sqlite3,application/x-sqlite3" disabled={busy} onChange={event => void inspectSelectedFile(event.target.files?.[0] || null)} /></label><label>Type IMPORT to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value)} /></label></div>
+      {inspecting && <div className="notice">Validating the export and reading its categories…</div>}
+      {availableImportCategories && <>
+        <p className="disclosure">Select which available categories to import. All categories in this snapshot are selected by default.</p>
+        <div className="cleanGrid">{databaseTransferCategories.filter(([id]) => availableImportCategories.includes(id)).map(([id, label]) => <label className="cleanOption" key={id}><span><input type="checkbox" checked={importSelected.has(id)} disabled={busy} onChange={() => toggleImport(id)} /> {label}</span></label>)}</div>
+      </>}
+      <button className="dangerButton" disabled={busy || inspecting || !file || availableImportCategories === null || importCategories.length === 0 || confirmation.trim().toUpperCase() !== "IMPORT"} onClick={importSnapshot}>{importCategories.length === 1 && importCategories[0] === "broker-definitions" ? "Import broker definitions" : "Import selected data"}</button>
     </section>
     {message && <div className="notice">{message}</div>}{error && <div className="error">{error}</div>}
     <DatabaseTools onCleaned={onCleaned} onReset={onReset} />

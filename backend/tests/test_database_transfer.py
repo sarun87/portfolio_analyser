@@ -1,9 +1,15 @@
 import sqlite3
+from typing import Optional
 
 import pytest
 
 from backend.app.db.schema import init_db
-from backend.app.services.database_transfer_service import TransferError, create_export, import_export
+from backend.app.services.database_transfer_service import (
+    TransferError,
+    create_export,
+    import_export,
+    inspect_export,
+)
 
 
 def _connection() -> sqlite3.Connection:
@@ -21,6 +27,34 @@ def _static(conn: sqlite3.Connection, category: str, name: str, amount: float) -
         (category, name, amount),
     )
     conn.commit()
+
+
+def _broker(
+    conn: sqlite3.Connection,
+    name: str,
+    *,
+    default_currency: str = "USD",
+    notes: Optional[str] = None,
+    mappings_json: str = "{}",
+    configuration_version: int = 1,
+) -> int:
+    cursor = conn.execute(
+        """INSERT INTO brokers(name, default_currency, notes, mappings_json, configuration_version)
+           VALUES (?, ?, ?, ?, ?)""",
+        (name, default_currency, notes, mappings_json, configuration_version),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def _account(conn: sqlite3.Connection, broker_id: int, fingerprint: str) -> int:
+    cursor = conn.execute(
+        """INSERT INTO accounts(broker_id, account_number_enc, account_mask, account_fingerprint)
+           VALUES (?, 'encrypted-number', '1234', ?)""",
+        (broker_id, fingerprint),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
 
 
 def test_bank_export_import_replaces_only_bank_accounts(tmp_path):
@@ -75,3 +109,95 @@ def test_schema_constraint_or_index_difference_is_rejected(tmp_path):
     with pytest.raises(TransferError, match="incompatible"):
         import_export(target, export_path, ["bank-accounts"])
     assert target.execute("SELECT entity_name FROM static_accounts").fetchone()[0] == "Keep bank"
+
+
+def test_broker_definitions_export_excludes_brokerage_data(tmp_path):
+    source = _connection()
+    broker_id = _broker(source, "Example Broker", notes="Statement mapping")
+    _account(source, broker_id, "source-account")
+    export_path = tmp_path / "brokers.db"
+    export_path.write_bytes(create_export(source, ["broker-definitions"]))
+
+    target = _connection()
+    assert inspect_export(target, export_path) == ["broker-definitions"]
+    assert target.execute("SELECT COUNT(*) FROM brokers").fetchone()[0] == 0
+
+    exported = sqlite3.connect(export_path)
+    try:
+        assert exported.execute("SELECT name FROM brokers").fetchall() == [("Example Broker",)]
+        assert exported.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+        assert exported.execute("SELECT COUNT(*) FROM securities").fetchone()[0] == 0
+        assert exported.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+        manifest = exported.execute(
+            "SELECT categories_json FROM portfolio_transfer_manifest WHERE id = 1"
+        ).fetchone()[0]
+        assert manifest == '["broker-definitions"]'
+    finally:
+        exported.close()
+
+
+def test_broker_definitions_import_merges_without_changing_local_links(tmp_path):
+    source = _connection()
+    _broker(
+        source,
+        "Shared Broker",
+        default_currency="CAD",
+        notes="Imported definition",
+        mappings_json='{"symbol":"Ticker"}',
+        configuration_version=4,
+    )
+    _broker(source, "New Broker", default_currency="EUR", configuration_version=2)
+    source_path = tmp_path / "brokers.db"
+    source_path.write_bytes(create_export(source, ["broker-definitions"]))
+
+    target = _connection()
+    target.execute("ALTER TABLE brokers ADD COLUMN local_metadata TEXT")
+    shared_id = _broker(
+        target,
+        "Shared Broker",
+        notes="Old definition",
+        mappings_json="{}",
+        configuration_version=7,
+    )
+    local_account_id = _account(target, shared_id, "local-account")
+    _broker(target, "Local-only Broker")
+
+    assert inspect_export(target, source_path) == ["broker-definitions"]
+    result = import_export(target, source_path, ["broker-definitions"])
+
+    assert result == {"broker-definitions": 2}
+    assert {row[0] for row in target.execute("SELECT name FROM brokers")} == {
+        "Shared Broker",
+        "New Broker",
+        "Local-only Broker",
+    }
+    shared = target.execute(
+        "SELECT id, default_currency, notes, mappings_json, configuration_version "
+        "FROM brokers WHERE name = ?",
+        ("Shared Broker",),
+    ).fetchone()
+    assert tuple(shared) == (shared_id, "CAD", "Imported definition", '{"symbol":"Ticker"}', 8)
+    assert target.execute(
+        "SELECT broker_id FROM accounts WHERE id = ?", (local_account_id,)
+    ).fetchone()[0] == shared_id
+    assert target.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
+    assert target.execute(
+        "SELECT local_metadata FROM brokers WHERE name = ?", ("New Broker",)
+    ).fetchone()[0] is None
+    assert target.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_brokerage_and_broker_definitions_import_brokers_only_once(tmp_path):
+    source = _connection()
+    broker_id = _broker(source, "Full Brokerage")
+    _account(source, broker_id, "full-account")
+    export_path = tmp_path / "full-brokerage.db"
+    export_path.write_bytes(create_export(source, ["brokerage", "broker-definitions"]))
+
+    target = _connection()
+    result = import_export(target, export_path, ["brokerage", "broker-definitions"])
+
+    assert result == {"brokerage": 2, "broker-definitions": 0}
+    assert target.execute("SELECT COUNT(*) FROM brokers WHERE name = 'Full Brokerage'").fetchone()[0] == 1
+    assert target.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
+    assert target.execute("PRAGMA foreign_key_check").fetchall() == []

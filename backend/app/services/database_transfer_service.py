@@ -17,7 +17,7 @@ from backend.app.db.schema import MIGRATIONS, init_db
 
 FORMAT_VERSION = 1
 CATEGORIES = (
-    "brokerage", "bank-accounts", "retirement-accounts", "other-static-accounts",
+    "brokerage", "broker-definitions", "bank-accounts", "retirement-accounts", "other-static-accounts",
     "real-estate", "private-equity", "liabilities", "planning-settings",
 )
 
@@ -42,6 +42,10 @@ STATIC_CATEGORY_VALUES = {
     "retirement-accounts": "Retirement Account",
     "other-static-accounts": "Other",
 }
+BROKER_DEFINITION_COLUMNS = (
+    "name", "default_currency", "notes", "locked_fields_json", "header_signature_json",
+    "mappings_json", "configuration_version",
+)
 
 
 class TransferError(ValueError):
@@ -69,9 +73,11 @@ def _reset_sequence(conn: sqlite3.Connection, table: str) -> None:
         pass
 
 
-def _delete_brokerage(conn: sqlite3.Connection) -> None:
+def _delete_brokerage(conn: sqlite3.Connection, preserve_brokers: bool = False) -> None:
     # Child rows first, even when foreign-key enforcement is enabled.
     for table in reversed(BROKERAGE_TABLES):
+        if preserve_brokers and table == "brokers":
+            continue
         conn.execute(f"DELETE FROM {table}")
         _reset_sequence(conn, table)
 
@@ -87,6 +93,11 @@ def clear_categories(conn: sqlite3.Connection, categories: Iterable[str]) -> Non
     for category in categories:
         if category == "brokerage":
             _delete_brokerage(conn)
+        elif category == "broker-definitions":
+            # Broker definitions are imported as an upsert by name. They are
+            # never deleted by a definitions-only transfer because active
+            # accounts and statement history may still refer to them.
+            continue
         elif category == "planning-settings":
             _delete_planning(conn)
         elif category in STATIC_CATEGORY_VALUES:
@@ -124,6 +135,12 @@ def create_export_file(conn: sqlite3.Connection, categories: Iterable[str]) -> P
             conn.backup(export)
             export.execute("PRAGMA foreign_keys = ON")
             excluded = [category for category in CATEGORIES if category not in categories]
+            # A definitions-only export keeps brokers while stripping the
+            # dependent brokerage data. A full brokerage export remains a
+            # self-contained bundle and always includes its broker rows.
+            if "brokerage" not in categories:
+                _delete_brokerage(export, preserve_brokers="broker-definitions" in categories)
+                excluded.remove("brokerage")
             clear_categories(export, excluded)
             selected_static_values = [STATIC_CATEGORY_VALUES[category] for category in categories if category in STATIC_CATEGORY_VALUES]
             if selected_static_values:
@@ -193,6 +210,76 @@ def _table_schema_signature(conn: sqlite3.Connection, table: str) -> tuple:
     return (_normalise_sql(master[0]), tuple(foreign_keys), tuple(sorted(indexes)), triggers)
 
 
+def _has_unique_column_index(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    for index in conn.execute(f"PRAGMA index_list({_quote_identifier(table)})"):
+        if not index[2]:
+            continue
+        name = index[1]
+        indexed_columns = tuple(
+            row[2] for row in conn.execute(f"PRAGMA index_info({_quote_identifier(name)})")
+        )
+        if indexed_columns == (column,):
+            return True
+    return False
+
+
+def _validate_broker_definition_schema(source: sqlite3.Connection, target: sqlite3.Connection) -> None:
+    """Check the columns and constraints used by definitions-only merge.
+
+    This transfer intentionally ignores broker IDs and creation timestamps and
+    merges the layout fields by name. Comparing the complete CREATE TABLE SQL
+    would reject otherwise compatible databases for unrelated DDL differences.
+    """
+    source_columns = {
+        row[1] for row in source.execute("PRAGMA table_info(\"brokers\")")
+    }
+    target_columns = {
+        row[1] for row in target.execute("PRAGMA table_info(\"brokers\")")
+    }
+    missing = sorted(set(BROKER_DEFINITION_COLUMNS) - source_columns | set(BROKER_DEFINITION_COLUMNS) - target_columns)
+    if missing:
+        raise TransferError(
+            "The export schema is incompatible for broker definitions; required columns are missing: "
+            f"{', '.join(missing)}."
+        )
+    if not _has_unique_column_index(source, "brokers", "name") or not _has_unique_column_index(target, "brokers", "name"):
+        raise TransferError("The export schema is incompatible for broker definitions; broker names must be unique.")
+
+    # New local columns are safe if inserts can omit them. Reject required
+    # columns without defaults before any live rows are changed.
+    for column in target.execute("PRAGMA table_xinfo(\"brokers\")"):
+        name, not_null, default, primary_key = column[1], column[3], column[4], column[5]
+        hidden = column[6] if len(column) > 6 else 0
+        if (
+            name not in BROKER_DEFINITION_COLUMNS
+            and name != "id"
+            and not hidden
+            and not_null
+            and default is None
+            and not primary_key
+        ):
+            raise TransferError(
+                f"The export schema is incompatible for broker definitions; local column '{name}' "
+                "requires a value the import cannot provide."
+            )
+
+
+def _tables_for_categories(categories: Iterable[str]) -> set[str]:
+    tables: set[str] = set()
+    for category in categories:
+        if category == "brokerage":
+            tables.update(BROKERAGE_TABLES)
+        elif category == "broker-definitions":
+            tables.add("brokers")
+        elif category == "planning-settings":
+            tables.update(PLANNING_TABLES)
+        elif category in STATIC_CATEGORY_VALUES:
+            tables.add("static_accounts")
+        else:
+            tables.update(SINGLE_TABLE_CATEGORIES[category])
+    return tables
+
+
 def _read_manifest(conn: sqlite3.Connection) -> tuple[list[str], list[int]]:
     try:
         row = conn.execute("SELECT format_version, migration_versions_json, categories_json FROM portfolio_transfer_manifest WHERE id = 1").fetchone()
@@ -231,8 +318,10 @@ def _open_and_validate(source_path: Path, requested: list[str], target: sqlite3.
             init_db(source)
         if _migration_versions(source) != current:
             raise TransferError("The export could not be upgraded to the current database schema.")
-        for table in set(BROKERAGE_TABLES + PLANNING_TABLES + ("static_accounts", "real_estate_assets", "private_equity_assets", "liabilities")):
-            if _table_schema_signature(source, table) != _table_schema_signature(target, table):
+        for table in sorted(_tables_for_categories(requested)):
+            if table == "brokers" and "brokerage" not in requested:
+                _validate_broker_definition_schema(source, target)
+            elif _table_schema_signature(source, table) != _table_schema_signature(target, table):
                 raise TransferError(f"The export schema is incompatible for table '{table}'.")
         if source.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise TransferError("The export database integrity check failed.")
@@ -240,6 +329,16 @@ def _open_and_validate(source_path: Path, requested: list[str], target: sqlite3.
     except Exception:
         source.close()
         raise
+
+
+def inspect_export(target: sqlite3.Connection, source_path: Path) -> list[str]:
+    """Return the manifest categories after file, migration, and integrity checks."""
+    source = _open_and_validate(source_path, [], target)
+    try:
+        categories, _ = _read_manifest(source)
+        return categories
+    finally:
+        source.close()
 
 
 def _copy_table(source: sqlite3.Connection, target: sqlite3.Connection, table: str, where: str = "", params: tuple = (), omit_id: bool = False) -> int:
@@ -250,6 +349,27 @@ def _copy_table(source: sqlite3.Connection, target: sqlite3.Connection, table: s
     rows = source.execute(f"SELECT {quoted} FROM {table} {where}", params).fetchall()
     if rows:
         target.executemany(f"INSERT INTO {table} ({quoted}) VALUES ({', '.join('?' for _ in columns)})", [tuple(row[column] for column in columns) for row in rows])
+    return len(rows)
+
+
+def _copy_broker_definitions(source: sqlite3.Connection, target: sqlite3.Connection) -> int:
+    """Merge imported broker layouts by name while preserving local IDs/links."""
+    rows = source.execute("""SELECT name,default_currency,notes,locked_fields_json,header_signature_json,
+        mappings_json,configuration_version FROM brokers ORDER BY name""").fetchall()
+    for row in rows:
+        existing = target.execute("SELECT id,configuration_version FROM brokers WHERE name=?", (row["name"],)).fetchone()
+        if existing:
+            target.execute("""UPDATE brokers SET default_currency=?,notes=?,locked_fields_json=?,
+                header_signature_json=?,mappings_json=?,configuration_version=? WHERE id=?""",
+                (row["default_currency"], row["notes"], row["locked_fields_json"],
+                 row["header_signature_json"], row["mappings_json"],
+                 max(int(existing["configuration_version"]), int(row["configuration_version"])) + 1,
+                 existing["id"]))
+        else:
+            target.execute("""INSERT INTO brokers(name,default_currency,notes,locked_fields_json,
+                header_signature_json,mappings_json,configuration_version) VALUES(?,?,?,?,?,?,?)""",
+                (row["name"], row["default_currency"], row["notes"], row["locked_fields_json"],
+                 row["header_signature_json"], row["mappings_json"], row["configuration_version"]))
     return len(rows)
 
 
@@ -265,6 +385,12 @@ def import_export(target: sqlite3.Connection, source_path: Path, categories: Ite
             if category == "brokerage":
                 for table in BROKERAGE_TABLES:
                     count += _copy_table(source, target, table)
+            elif category == "broker-definitions":
+                # A brokerage bundle already copied its brokers together with
+                # the dependent accounts and statements; avoid re-upserting
+                # those definitions a second time in the same import.
+                if "brokerage" not in requested:
+                    count += _copy_broker_definitions(source, target)
             elif category == "planning-settings":
                 for table in PLANNING_TABLES:
                     count += _copy_table(source, target, table)
