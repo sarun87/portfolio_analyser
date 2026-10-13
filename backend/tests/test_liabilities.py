@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 from backend.app.core.encryption import generate_salt, key_manager
 from backend.app.db.schema import init_db
 from backend.app.services.asset_service import create_liability, delete_liability, list_liabilities, update_liability

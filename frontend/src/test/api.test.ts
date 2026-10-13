@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+// SPDX-License-Identifier: GPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 

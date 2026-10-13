@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """Process-local cache for derived portfolio analysis.
 
 The encrypted database is intentionally single-process.  Its revision changes

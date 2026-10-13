@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """MFAPI support for Indian mutual-fund NAV refreshes."""
 from __future__ import annotations
 

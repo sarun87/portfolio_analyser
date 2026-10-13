@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 import sqlite3
 from io import BytesIO
 from types import SimpleNamespace

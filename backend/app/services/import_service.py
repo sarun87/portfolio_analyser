@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 from backend.app.services.csv_importer import derive_per_unit_and_total, preview_with_mapping, sanitize_acquisition_date
 from backend.app.services.models import ImportCommitRequest, ImportReconciliationRow, ImportResult, ImportPreview
 from backend.app.services.repositories import fingerprint_account, get_or_create_account, get_broker, get_or_create_security, import_exists, insert_import

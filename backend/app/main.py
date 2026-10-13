@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.routes import auth_router, router
-from backend.app.core.config import FRONTEND_DIST, TRUSTED_ORIGINS, ensure_data_dir, validate_security_configuration
+from backend.app.core.config import FRONTEND_DIST, ROOT_DIR, TRUSTED_ORIGINS, ensure_data_dir, validate_security_configuration
 from backend.app.core.encryption import key_manager
 from backend.app.core.external_api_logging import setup_external_api_logging
 from backend.app.db.database import database_manager
@@ -42,6 +44,14 @@ app.include_router(router)
 
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+
+@app.get("/LICENSE", include_in_schema=False)
+def serve_license():
+    license_path = ROOT_DIR / "LICENSE"
+    if license_path.is_file():
+        return FileResponse(license_path, media_type="text/plain")
+    return {"message": "The project license file is not available in this installation."}
 
 
 @app.get("/{full_path:path}")

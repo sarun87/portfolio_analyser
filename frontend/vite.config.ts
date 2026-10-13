@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+// SPDX-License-Identifier: GPL-3.0-only
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
@@ -30,7 +32,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8000"
+      "/api": "http://127.0.0.1:8000",
+      "/LICENSE": "http://127.0.0.1:8000"
     }
   }
 });

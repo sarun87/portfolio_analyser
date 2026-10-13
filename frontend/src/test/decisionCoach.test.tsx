@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+// SPDX-License-Identifier: GPL-3.0-only
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

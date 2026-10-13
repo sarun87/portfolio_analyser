@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """Safe, rotating logging for outbound public-data requests."""
 
 from __future__ import annotations

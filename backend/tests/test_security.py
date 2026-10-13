@@ -1,4 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +15,19 @@ from backend.app.api.routes import CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, clear_
 from backend.app.core.encryption import EncryptionError, generate_salt, key_manager
 from backend.app.db.database import EncryptedDatabase
 from backend.app.db.schema import init_db
-from backend.app.main import app
+from backend.app.main import app, serve_license
+
+
+def test_gpl_license_is_served_to_interactive_application_users():
+    route = next((route for route in app.routes if getattr(route, "path", None) == "/LICENSE"), None)
+    response = serve_license()
+
+    assert route is not None
+    assert response.status_code == 200
+    assert response.media_type == "text/plain"
+    license_text = Path(response.path).read_text(encoding="utf-8")
+    assert "GNU GENERAL PUBLIC LICENSE" in license_text
+    assert "Version 3" in license_text
 
 
 def test_every_non_auth_api_route_requires_unlocked_database():

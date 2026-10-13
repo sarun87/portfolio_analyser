@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """Portable, plain-SQLite database transfers.
 
 Exports intentionally contain unencrypted financial data.  They are created

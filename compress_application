@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,18 +14,57 @@ mkdir -p "$ARCHIVE_DIR"
 if [[ "$MODE" != "portable" && "$MODE" != "--portable" && "$MODE" != "full" && "$MODE" != "--full" ]]; then
   echo "Usage: ./compress_application [--portable|--full]"
   echo "  --portable  Archive source and built app files; exclude runtime data and machine-specific dependencies. Default."
-  echo "  --full      Archive everything except generated archives and runtime data."
+  echo "  --full      Archive application files except generated archives, private data, and local environments."
   exit 1
 fi
+
+COMMON_EXCLUDES=(
+  "--exclude=$APP_NAME/archives"
+  "--exclude=$APP_NAME/data"
+  "--exclude=$APP_NAME/data_backup"
+  "--exclude=$APP_NAME/backups"
+  "--exclude=$APP_NAME/exports"
+  "--exclude=$APP_NAME/secrets"
+  "--exclude=$APP_NAME/logs"
+  "--exclude=$APP_NAME/certs"
+  "--exclude=$APP_NAME/test_data"
+  "--exclude=$APP_NAME/backend/fixtures"
+  "--exclude=$APP_NAME/.git"
+  "--exclude=$APP_NAME/.venv"
+  "--exclude=$APP_NAME/frontend/node_modules"
+  "--exclude=$APP_NAME/.pytest_cache"
+  "--exclude=$APP_NAME/backend/.pytest_cache"
+  "--exclude=$APP_NAME/frontend/.pytest_cache"
+  "--exclude=$APP_NAME/__pycache__"
+  "--exclude=$APP_NAME/backend/__pycache__"
+  "--exclude=$APP_NAME/frontend/__pycache__"
+  "--exclude=$APP_NAME/*.env"
+  "--exclude=$APP_NAME/.env"
+  "--exclude=$APP_NAME/.env.*"
+  "--exclude=$APP_NAME/.envrc"
+  "--exclude=$APP_NAME/*.db"
+  "--exclude=$APP_NAME/*.db-*"
+  "--exclude=$APP_NAME/*.sqlite*"
+  "--exclude=$APP_NAME/*.csv"
+  "--exclude=$APP_NAME/*.pdf"
+  "--exclude=$APP_NAME/*.tar"
+  "--exclude=$APP_NAME/*.tar.gz"
+  "--exclude=$APP_NAME/*.zip"
+  "--exclude=$APP_NAME/*.log"
+  "--exclude=$APP_NAME/*.key"
+  "--exclude=$APP_NAME/*.pem"
+  "--exclude=$APP_NAME/*.p12"
+  "--exclude=$APP_NAME/*.pfx"
+  "--exclude=$APP_NAME/*.crt"
+  "--exclude=$APP_NAME/.DS_Store"
+)
 
 if [[ "$MODE" == "--full" || "$MODE" == "full" ]]; then
   ARCHIVE_PATH="$ARCHIVE_DIR/${APP_NAME}_full_${TIMESTAMP}.tar.gz"
   echo "Creating full archive at:"
   echo "  $ARCHIVE_PATH"
   tar \
-    --exclude="./archives" \
-    --exclude="./data" \
-    --exclude="./logs" \
+    "${COMMON_EXCLUDES[@]}" \
     -czf "$ARCHIVE_PATH" \
     -C "$ROOT_DIR/.." \
     "$APP_NAME"
@@ -32,18 +73,7 @@ else
   echo "Creating portable archive at:"
   echo "  $ARCHIVE_PATH"
   tar \
-    --exclude="./archives" \
-    --exclude="./data/portfolio.db.encrypted" \
-    --exclude="./data/auth.json" \
-    --exclude="./data/*.tmp" \
-    --exclude="./.git" \
-    --exclude="./.venv" \
-    --exclude="./frontend/node_modules" \
-    --exclude="./.pytest_cache" \
-    --exclude="./__pycache__" \
-    --exclude="*/__pycache__" \
-    --exclude="*.pyc" \
-    --exclude=".DS_Store" \
+    "${COMMON_EXCLUDES[@]}" \
     -czf "$ARCHIVE_PATH" \
     -C "$ROOT_DIR/.." \
     "$APP_NAME"
