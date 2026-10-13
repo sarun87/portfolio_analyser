@@ -2,6 +2,8 @@
 
 Synthetic CSV statement files for application and UI testing. These are not real account statements and do not contain real account data.
 
+Keep these fixtures synthetic and free of personal or account data. Before adding a fixture, confirm that its author-created content may be redistributed under the repository license.
+
 ## Files
 
 - `etrade_statement_2026-06-30.csv`
