@@ -7,6 +7,11 @@ This project is licensed under the GNU General Public License v3.0 only (GPL-3.0
 
 Local-first portfolio statement analyser for configurable CSV broker exports.
 
+![Overview](images/Overview-page.png)
+![Analytics & Insights](images/Insights-Analytics.png)
+![Allocation Charts](images/Allocation-charts.png)
+![Monte Carlo Projections](images/Monte-Carlo-Projection.png)
+
 ## What it does
 
 - Broker definitions are editable: configure one or more CSV sections, their header signatures, mappings, and optional row filters, then import using the saved configuration. New databases do not currently seed broker definitions; add or import the definitions you need.
