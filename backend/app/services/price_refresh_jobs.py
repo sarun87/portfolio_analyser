@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """In-process, cancellable price-refresh jobs.
 
 The encrypted database deliberately has one SQLite connection.  This module

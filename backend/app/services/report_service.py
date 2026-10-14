@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """In-memory, local-only PDF net-worth reports."""
 from __future__ import annotations
 

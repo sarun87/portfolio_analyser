@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 """Small, explicit company-level aliases used only by analytics rollups."""
 
 from __future__ import annotations

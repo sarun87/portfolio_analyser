@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+// SPDX-License-Identifier: GPL-3.0-only
 import {
   BarChart3,
   Building2,
@@ -3044,6 +3046,13 @@ function Settings({
         </div>
       </div>
       <MfapiSchemeCacheSettings />
+      <section className="panel" aria-labelledby="license-notice-heading">
+        <h2 id="license-notice-heading">License and legal notice</h2>
+        <p>Portfolio Analyser. Copyright (C) Arun Sriraman.</p>
+        <p>This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License, version 3. It comes with no warranty. You may convey it under the license terms.</p>
+        <p><a href="/LICENSE" target="_blank" rel="noopener noreferrer">View the GPLv3 license</a></p>
+        <p className="disclosure">Portfolio calculations are informational and are not financial, tax, or investment advice.</p>
+      </section>
       <PasswordSettings />
       </>}
     </section>

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 # Build locally for the current architecture (Apple Silicon, ARM Linux, or x86 Linux):
 #   docker build --tag portfolio-analyser:latest .
 # Publish a multi-architecture image (requires a configured buildx builder and registry access):
@@ -18,6 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+COPY LICENSE ./LICENSE
+COPY THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN python -m pip install --no-cache-dir -r backend/requirements.txt
 

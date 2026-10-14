@@ -14,6 +14,70 @@ The app is designed for sensitive financial data:
 - The complete database is encrypted with an app passphrase.
 - Account numbers are masked in the UI.
 
+## Architecture and request flows
+
+```mermaid
+flowchart LR
+  Browser[React and TypeScript UI] -->|HTTP JSON| API[FastAPI routes]
+  API --> Services[Portfolio, import, analytics, and refresh services]
+  Services --> DB[(Unlocked in-memory SQLite)]
+  DB -->|encrypted snapshot on lock or commit| Disk[(Local data directory)]
+  Services --> Yahoo[Yahoo Finance]
+  Services --> Google[Google Finance]
+  Services --> MFAPI[MFAPI]
+  Services --> FX[Frankfurter]
+```
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant UI as Browser UI
+  participant API as FastAPI
+  participant Store as Encrypted snapshot
+  participant DB as In-memory SQLite
+  User->>UI: Enter app passphrase
+  UI->>API: Unlock request
+  API->>Store: Read encrypted snapshot
+  Store-->>API: Ciphertext and KDF metadata
+  API->>DB: Decrypt, migrate, and open database
+  API-->>UI: Unlocked session
+```
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant UI as Upload UI
+  participant API as FastAPI
+  participant Parser as CSV importer
+  participant DB as In-memory SQLite
+  User->>UI: Select broker and statement
+  UI->>API: Upload for preview
+  API->>Parser: Parse, validate, and map rows
+  Parser-->>UI: Preview and warnings
+  User->>UI: Confirm import
+  UI->>API: Commit preview
+  API->>DB: Persist normalized accounts, lots, and positions
+  API-->>UI: Import result and refreshed analytics
+```
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant UI as Analytics UI
+  participant API as FastAPI
+  participant Service as Refresh service
+  participant Provider as Market-data provider
+  participant DB as In-memory SQLite
+  User->>UI: Request refresh for selected security/fund
+  UI->>API: Refresh request
+  API->>Service: Validate security and provider
+  Service->>Provider: Fetch current data
+  Provider-->>Service: Quote, NAV, history, or fund metadata
+  Service->>Service: Validate response before writes
+  Service->>DB: Persist successful refresh
+  Service-->>UI: Per-item result or explicit error
+```
+
 ## Stack
 
 - Backend: FastAPI, Python 3.9-compatible code.
@@ -25,6 +89,7 @@ The app is designed for sensitive financial data:
 - External data:
   - Market prices: Yahoo Finance chart endpoint.
   - Security classification: Yahoo Finance quote summary endpoint with local fallback rules.
+  - Fund data: yfinance/Yahoo Finance; Google Finance for Google Finance-specific symbols; MFAPI for India mutual-fund NAV and scheme resolution.
   - FX rates: Frankfurter API, with manual overrides in Settings.
 
 ## Important Scripts
@@ -41,7 +106,7 @@ The app is designed for sensitive financial data:
 
 - `./compress_application [--portable|--full]`
   - Creates copyable archives under `archives/`
-  - Both modes exclude the encrypted database, unlock configuration, temporary runtime data, and generated archives
+  - Both modes exclude portfolio data, backups, logs, certificates, local environments, and generated archives
 
 ## Repository Layout
 
@@ -64,7 +129,6 @@ The app is designed for sensitive financial data:
 - `backend/app/db/schema.py`
   - SQLite schema
   - Fresh database initialization
-  - Broker seed data
   - FX default-rate seeding
 
 - `backend/app/services/`
@@ -112,14 +176,7 @@ Core tables:
   - Stores application settings such as the selected display currency.
 
 - `brokers`
-  - Seeded broker names:
-    - `ETRADE`
-    - `Charles Schwab`
-    - `Morgan Stanley`
-    - `Fidelity`
-  - `Vanguard`
-  - `Interactive Brokers (IBKR)`
-  - `HDFC Securities`
+  - User-maintained broker definitions and CSV mappings. Fresh databases do not currently seed broker definitions.
 
 - `accounts`
   - Broker account records.
@@ -494,6 +551,7 @@ Recommended manual flow:
 - FX conversion assumes stored position values are in the row currency and applies the selected display rate at view time.
 - Price refresh does not yet store quote currency.
 - Yahoo Finance endpoints are unofficial and may change.
+- Google Finance quote parsing is page-structure dependent and may change; India MFAPI requests are available only for Indian mutual-fund NAV/scheme data.
 - Frankfurter rates require internet access; manual rates are available as fallback.
 - Security classification is best-effort and should not be treated as authoritative investment taxonomy.
 - Frontend is mostly in one large `App.tsx`; future growth should split it into feature components.

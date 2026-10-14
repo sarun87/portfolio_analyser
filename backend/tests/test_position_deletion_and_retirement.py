@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
+# SPDX-License-Identifier: GPL-3.0-only
 from backend.app.db.schema import init_db
 from backend.app.services.asset_service import create_static_account
 from backend.app.services.broker_service import save_broker
