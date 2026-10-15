@@ -14,44 +14,19 @@ Local-first portfolio statement analyser for configurable CSV broker exports.
 
 ## What it does
 
-- Broker definitions are editable: configure one or more CSV sections, their header signatures, mappings, and optional row filters, then import using the saved configuration. New databases do not currently seed broker definitions; add or import the definitions you need.
-- Imports never accept one-off column mappings; refresh the preview if a broker configuration changes. Import-only lock overrides do not alter broker defaults.
-- Stores normalized positions, lots, cost basis, FMV, and statement snapshots in local SQLite.
-- Encrypts the complete portfolio database at rest with an app passphrase and masks accounts in the UI by default.
-- Shows positions, unrealized profit/loss, allocation, portfolio growth, and net-worth trends.
-- Provides a ranked portfolio review inbox with evidence, confidence, estimated impact, and non-prescriptive next steps.
-- Turns asset-category, country, and currency targets into household allocation-policy ranges with configurable per-target tolerances and explainable breach alerts.
-- Compares the two latest portfolio states for new/exited holdings, unit changes, cash movement, allocation shifts, and unusual valuation changes, with inferred activity clearly labeled.
-- Saves non-destructive scenarios for contributions, withdrawals, reallocations, sales, cash reserves, and goal allocations, with current-versus-proposed comparisons.
-- Runs preset and custom portfolio stress tests across market, rate, currency, allocation-category, and security-level shocks.
-- Expands manually supplied or explicitly approved fund holdings into effective company, sector, geography, currency, and asset-class exposure, including fund overlap and unmapped coverage.
-- Estimates volatility, drawdown, correlation, beta, and holding-level risk contribution from cached five-year adjusted histories, with manual security, benchmark, and FX imports for offline use.
-- Records outbound Yahoo Finance, Google Finance, MFAPI, and Frankfurter calls in `logs/external_api.log`, including provider, status, and duration. Logs rotate at 10 MB with seven files retained; URLs are recorded without queries and no response data or headers are logged.
-- Tracks fund expense ratios, advisory fees, named account fees, reserve-aware cash drag, and 1/10/20/30-year nominal and opportunity costs.
-- Resolves each listed security's exchange and investment country at import, with manual correction when a ticker cannot be resolved.
-- Supports per-import field locks to retain selected prior holding values such as cost basis.
-- Refreshes market prices per security or globally through a Yahoo-style quote adapter.
-
-Public fund metadata and historical market data are optional and token-free. Refreshes are user initiated. When requested, the app sends the relevant ticker or scheme identifier to Yahoo Finance, Google Finance, or MFAPI; currency-rate refreshes contact Frankfurter. Public fund holdings and expense ratios are saved only after review; manual metadata and manual price histories are authoritative and are not overwritten by refreshes. Coverage, freshness, and missing-data limitations are shown with the resulting analytics. Provider availability and terms can change independently of this project.
+- __Bring your finances together__: import brokerage CSV statements with reusable broker layouts, and track investments, bank and retirement accounts, real estate, private equity, and liabilities.
+- __See the whole picture__: explore holdings, cost basis, gains and losses, allocation, portfolio growth, and household net worth over time. Compare snapshots to understand what changed.
+- __Explore your portfolio__: review explainable insights and allocation-policy drift; examine fund holdings, look-through company exposure, overlap, fees, and potential cash drag.
+- __Plan ahead__: set financial goals, model expenses and contributions, and explore lifetime projections based on 10,000 simulated paths. Compare saved scenarios and run portfolio stress tests.
+- __Understand risk__: review volatility, beta, drawdowns, correlations, and holding-level risk contribution using refreshed or imported market history.
+- __Share a polished snapshot__: generate a locally created PDF net-worth report—a one-page summary or a detailed report with an asset appendix—with your own title, logo, and footer.
+- __Keep control of your data__: the portfolio database is encrypted at rest, and market-data refreshes are optional and user initiated. Public-data coverage and freshness limits are shown; provider availability and terms may change.
 
 The application provides portfolio calculations and visualizations for informational purposes only. It is not financial, tax, or investment advice; verify values with your financial institution before making decisions.
 
-## License
-
-GPLv3 does not require repeating the entire license in every source file. For clear attribution, hand-written first-party source files use these SPDX notices in the comment syntax of their language:
-
-```text
-SPDX-FileCopyrightText: Copyright (C) Arun Sriraman
-SPDX-License-Identifier: GPL-3.0-only
-```
-
-Machine-readable files that do not support comments, generated output, test data, and third-party code are not given these headers. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the current direct-dependency license inventory; verify exact transitive dependencies before distributing a build.
-
-The encrypted in-memory database is a single-process design. Run one Uvicorn worker; multiple workers would have separate in-memory copies of the portfolio. Multiple browser sessions are supported by the one process while the portfolio remains unlocked. Use the global lock action to revoke every session.
-
 ## Run locally
 
-Requirements: Python 3.9 or newer and Node.js 22 with npm.
+Requirements: Python 3.9 or newer and Node.js 22 with npm. From the project directory, set up the environment and build the frontend once:
 
 ```bash
 python3 -m venv .venv
@@ -61,12 +36,17 @@ pip install -r backend/requirements.txt
 cd frontend
 npm install
 npm run build
+npm run dev
 cd ..
-
-uvicorn backend.app.main:app --reload
 ```
 
-Then open `http://127.0.0.1:8000`.
+The `run_portfolio_analyser` launcher script encompasses the workflow stated above. Run the app with the included launcher for development mode as below:
+
+```bash
+./run_portfolio_analyser
+```
+
+Then open `http://127.0.0.1:8000` in your browser. The launcher binds to your local machine by default.
 
 ## Run with Docker
 
@@ -86,7 +66,11 @@ The Dockerfile builds natively on x86_64 and ARM64 hosts, including Apple Silico
 
 For network-accessible production deployment with HTTPS, see [PRODUCTION_HTTPS.md](PRODUCTION_HTTPS.md).
 
+## Notes
+
 Portfolio data exists as SQLite only in memory while the application is unlocked. Committed state is stored in `data/portfolio.db.encrypted` as a passphrase-encrypted container; no plaintext SQLite database or WAL is written to disk. `data/auth.json` contains only the random KDF salt and encrypted passphrase verifier.
+
+The encrypted in-memory database is a single-process design. Run one Uvicorn worker; multiple workers would have separate in-memory copies of the portfolio. Multiple browser sessions are supported by the one process while the portfolio remains unlocked. Use the global lock action to revoke every session.
 
 During development, the frontend can also run separately:
 
