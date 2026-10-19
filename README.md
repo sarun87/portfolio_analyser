@@ -56,6 +56,14 @@ Docker runs the application as an unprivileged process and bind-mounts `data/` a
 ./run_in_docker --build
 ```
 
+To run a published release instead of building from source, pull and start the public GHCR image:
+
+```bash
+./run_in_docker --pull
+```
+
+To use a specific release tag, set `PORTFOLIO_DOCKER_IMAGE=ghcr.io/sarun87/portfolio_analyser:vX.Y.Z` before running with `--pull`. The first time the image is published, make the package public in GitHub Packages if it is not already visible publicly.
+
 This makes the app available only on the local machine at `http://127.0.0.1:8000`. To allow access from the local LAN, explicitly opt into HTTP and name the exact URL opened in the browser:
 
 ```bash
@@ -66,8 +74,22 @@ The Dockerfile builds natively on x86_64 and ARM64 hosts, including Apple Silico
 
 For network-accessible production deployment with HTTPS, see [PRODUCTION_HTTPS.md](PRODUCTION_HTTPS.md).
 
+<<<<<<< HEAD
 ## Notes
 
+=======
+<<<<<<< Updated upstream
+=======
+## Docker releases
+
+Each `vMAJOR.MINOR.PATCH` GitHub Release publishes a multi-architecture Docker image for Linux/AMD64 and Linux/ARM64 to GHCR, tagged both with the release version and `latest`. GitHub Actions runs the backend and frontend tests before publishing. The GitHub Release includes generated release notes and the image reference; it does not include installer binaries. The first published GHCR package may need its visibility changed to **Public** in GitHub Packages.
+
+Maintainers publish a release by pushing a semantic-version tag such as `v1.2.3`. To move a portfolio between installations, use Settings → Database Operations to export the selected data from the old app, then import it into the new one. Database exports are plain SQLite files; store them securely and delete them when no longer needed. GitHub provides source archives for each tag.
+
+## Notes
+
+>>>>>>> Stashed changes
+>>>>>>> f1956d9 (Add release workflow to create and push images to ghcr repo)
 Portfolio data exists as SQLite only in memory while the application is unlocked. Committed state is stored in `data/portfolio.db.encrypted` as a passphrase-encrypted container; no plaintext SQLite database or WAL is written to disk. `data/auth.json` contains only the random KDF salt and encrypted passphrase verifier.
 
 The encrypted in-memory database is a single-process design. Run one Uvicorn worker; multiple workers would have separate in-memory copies of the portfolio. Multiple browser sessions are supported by the one process while the portfolio remains unlocked. Use the global lock action to revoke every session.
