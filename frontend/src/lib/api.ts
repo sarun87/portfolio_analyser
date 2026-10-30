@@ -145,6 +145,7 @@ export const api = {
   deletePosition: (id: number) => request<{ deleted: boolean }>(`/api/positions/${id}`, { method: "DELETE" }),
   profitLoss: () => request<Position[]>("/api/profit-loss"),
   dashboard: () => request<DashboardAnalytics>("/api/analytics/dashboard"),
+  captureNetWorthSnapshot: (snapshotDate: string) => request<{ date: string; value: number }>("/api/analytics/net-worth-snapshots", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ snapshot_date: snapshotDate }) }),
   reportBranding: () => request<ReportBranding>("/api/report-branding"),
   saveReportBranding: (payload: ReportBrandingPayload) => request<ReportBranding>("/api/report-branding", { method: "PUT", headers: jsonHeaders, body: JSON.stringify(payload) }),
   generateReport: (payload: ReportBrandingPayload & { report_type: "summary" | "detail" }) => download("/api/reports/generate", payload),

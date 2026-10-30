@@ -198,6 +198,12 @@ function money(value?: number | null, currency = "USD") {
   );
 }
 
+export function compactMoneyTick(value: number, currency: string) {
+  return new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en-US", {
+    style: "currency", currency, notation: "compact", maximumFractionDigits: 1
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
 function number(value?: number | null) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value || 0);
 }
@@ -342,16 +348,17 @@ function ChartZoomControls({ zoom }: { zoom: ReturnType<typeof useCartesianZoom>
 
 function ZoomableGrowthChart({ data, currency, height }: { data: Array<{ date: string; value: number }>; currency: string; height: number }) {
   const zoom = useCartesianZoom(data, "date", ["value"]);
+  const isPhone = useIsPhone();
   return <div className="interactiveChart">
     <ChartZoomControls zoom={zoom} />
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={zoom.visibleData} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
+      <AreaChart data={zoom.visibleData} margin={{ top: 8, right: 12, bottom: 0, left: 12 }} onMouseDown={zoom.startSelection} onMouseMove={zoom.updateSelection} onMouseUp={zoom.finishSelection} onMouseLeave={zoom.cancelSelection}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="date" minTickGap={24} />
-        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => money(Number(value), currency)} width={88} />
+        <YAxis domain={zoom.yDomain} tickCount={6} tickFormatter={(value) => isPhone ? compactMoneyTick(Number(value), currency) : money(Number(value), currency)} width={isPhone ? 112 : 168} tickMargin={8} />
         <Tooltip formatter={(value) => money(Number(value), currency)} />
         {zoom.selection && <ReferenceArea x1={zoom.selectionStartValue} x2={zoom.selectionEndValue} fill="#2563eb" fillOpacity={0.14} />}
-        <Area type="monotone" dataKey="value" stroke="#2563eb" fill="#bfdbfe" baseValue={zoom.yDomain?.[0]} />
+        <Area type="monotone" dataKey="value" stroke="#2563eb" fill="#bfdbfe" baseValue={zoom.yDomain?.[0]} dot={data.length === 1} />
       </AreaChart>
     </ResponsiveContainer>
   </div>;
@@ -866,6 +873,13 @@ export function App() {
           <Overview
             analytics={analytics}
             positions={positions}
+            onCaptureNetWorthSnapshot={async (snapshotDate) => {
+              const point = await api.captureNetWorthSnapshot(snapshotDate);
+              setAnalytics(current => current ? {
+                ...current,
+                net_worth_growth: [...current.net_worth_growth.filter(item => item.date !== point.date), point].sort((left, right) => left.date.localeCompare(right.date))
+              } : current);
+            }}
             valuesHidden={overviewValuesHidden}
             onValuesHiddenChange={setOverviewValuesHidden}
             onDownloadReport={() => setReportDialogOpen(true)}
@@ -895,7 +909,7 @@ export function App() {
             }}
           />
         )}
-        {view === "analytics" && <WorkspaceTabs tabs={[{id:"insights",label:"Insights"},{id:"what-changed",label:"What Changed"},{id:"allocation-policy",label:"Allocation Policy"},{id:"fund-data",label:"Fund data"},{id:"exposure",label:"Exposure"},{id:"value-metrics",label:"Value metrics"},{id:"growth",label:"Growth"},{id:"risk",label:"Risk"},{id:"scenario-lab",label:"Scenario Lab"}]} active={analyticsSection} onChange={id => setAnalyticsSection(id as typeof analyticsSection)} />}
+        {view === "analytics" && <WorkspaceTabs tabs={[{id:"insights",label:"Insights"},{id:"what-changed",label:"What Changed"},{id:"allocation-policy",label:"Allocation Policy"},{id:"fund-data",label:"Fund data"},{id:"exposure",label:"Exposure"},{id:"value-metrics",label:"Value metrics"},{id:"growth",label:"Portfolio growth"},{id:"risk",label:"Risk"},{id:"scenario-lab",label:"Scenario Lab"}]} active={analyticsSection} onChange={id => setAnalyticsSection(id as typeof analyticsSection)} />}
         {view === "analytics" && analyticsSection === "insights" && insights && <InsightsPage insights={insights} findings={reviewFindings || insights.findings} onNavigate={navigation => { if (navigation.page === "positions") { setPositionFilter(""); setPositionStructuredFilter(navigation.filters || {}); setView("portfolio"); setPortfolioSection("positions"); } else if (navigation.page === "analytics" && navigation.section === "allocation_policy") { setAnalyticsSection("allocation-policy"); } else if (navigation.page === "settings") { setPlanningSection("expenses-projections"); setView("planning"); } }} />}
         {view === "analytics" && analyticsSection === "what-changed" && insights && <WhatChangedPage insights={insights} />}
         {view === "analytics" && analyticsSection === "allocation-policy" && insights && <AllocationPolicyPage insights={insights} targets={allocationTargets} categories={allocationCategoryOptions} onChanged={loadData} />}
@@ -1022,6 +1036,7 @@ export function Overview({
   positions,
   onAllocationClick,
   onDownloadReport,
+  onCaptureNetWorthSnapshot,
   valuesHidden: controlledValuesHidden,
   onValuesHiddenChange
 }: {
@@ -1029,12 +1044,32 @@ export function Overview({
   positions: Position[];
   onAllocationClick: (label: string) => void;
   onDownloadReport?: () => void;
+  onCaptureNetWorthSnapshot: (snapshotDate: string) => Promise<void>;
   valuesHidden?: boolean;
   onValuesHiddenChange?: (hidden: boolean) => void;
 }) {
   const [localValuesHidden, setLocalValuesHidden] = useState(false);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotMessage, setSnapshotMessage] = useState<string | null>(null);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const valuesHidden = controlledValuesHidden ?? localValuesHidden;
+  const netWorthHistory = analytics.net_worth_growth || [];
   const displayedValue = (value: string) => valuesHidden ? "••••" : value;
+  async function captureNetWorthSnapshot() {
+    const now = new Date();
+    const snapshotDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    setSnapshotBusy(true);
+    setSnapshotMessage(null);
+    setSnapshotError(null);
+    try {
+      await onCaptureNetWorthSnapshot(snapshotDate);
+      setSnapshotMessage("Today's net-worth snapshot was saved or updated.");
+    } catch (error) {
+      setSnapshotError(error instanceof Error ? error.message : "Could not record today's net-worth snapshot.");
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
   const toggleValuesHidden = () => {
     const next = !valuesHidden;
     if (controlledValuesHidden === undefined) setLocalValuesHidden(next);
@@ -1061,11 +1096,20 @@ export function Overview({
         <Metric label="Positions" value={displayedValue(positions.length.toString())} />
       </div>
       <div className="chartGrid">
+        <section className="panel">
+          <div className="panelHeader">
+            <h2>Net Worth Over Time</h2>
+            <button type="button" disabled={snapshotBusy} onClick={() => void captureNetWorthSnapshot()}>
+              {snapshotBusy ? "Recording…" : "Record today's snapshot"}
+            </button>
+          </div>
+          <p className="disclosure">All tracked assets minus liabilities. History starts with your first manual capture; recording again on a day replaces that day's point. This is net-worth history, not investment performance.</p>
+          {snapshotMessage && <div className="notice" role="status">{snapshotMessage}</div>}
+          {snapshotError && <div className="error" role="alert">{snapshotError}</div>}
+          {valuesHidden ? <HiddenOverviewChart /> : netWorthHistory.length ? <OnDemandChart><ZoomableGrowthChart data={netWorthHistory} currency={analytics.display_currency} height={300} /></OnDemandChart> : <div className="emptyState">No net-worth snapshots yet. Record today's snapshot to start your all-assets history.</div>}
+        </section>
         <ChartPanel title="Net Worth Allocation">
           {valuesHidden ? <HiddenOverviewChart /> : <AllocationPie data={analytics.net_worth_allocation} currency={analytics.display_currency} />}
-        </ChartPanel>
-        <ChartPanel title="Portfolio Growth">
-          {valuesHidden ? <HiddenOverviewChart /> : <ZoomableGrowthChart data={analytics.portfolio_growth} currency={analytics.display_currency} height={260} />}
         </ChartPanel>
         <ChartPanel title="Asset Allocation">
           {valuesHidden ? <HiddenOverviewChart /> : <AllocationPie data={analytics.asset_allocation} currency={analytics.display_currency} onSliceClick={onAllocationClick} />}
@@ -1986,10 +2030,11 @@ export function ProfitLossTable({ positions, currencyMode = "position", onCurren
   );
 }
 
-function GrowthView({ analytics }: { analytics: DashboardAnalytics }) {
+export function GrowthView({ analytics }: { analytics: DashboardAnalytics }) {
   return (
     <section className="stack"><section className="panel tall">
-      <h2>Portfolio Growth</h2>
+      <h2>Brokerage Portfolio Growth</h2>
+      <p className="disclosure">Historical value of brokerage positions only. Overall net-worth history, including other assets and liabilities, is recorded from the Overview page.</p>
       <ZoomableGrowthChart data={analytics.portfolio_growth} currency={analytics.display_currency} height={420} />
     </section>{analytics.country_returns.length > 0 && <section className="panel"><h2>Country returns</h2><p className="disclosure">{analytics.country_snapshot_disclosure}</p><ZoomableCountryReturnChart rows={analytics.country_returns} currency={analytics.display_currency}/><div className="tableWrap"><table><thead><tr><th>Country</th><th>Current value</th><th>Cost basis</th><th>Unrealized return</th><th>Earliest snapshot</th><th>Latest snapshot</th><th>Value-change proxy</th></tr></thead><tbody>{analytics.country_returns.map(row=>{const tone=row.unrealized_return>=0?"good":"bad";return <tr key={row.country}><td>{row.country}</td><td>{money(row.current_market_value,analytics.display_currency)}</td><td>{money(row.cost_basis,analytics.display_currency)}</td><td className={`countryReturn ${tone}`}><strong>{money(row.unrealized_return,analytics.display_currency)}</strong><br/><b>{pct(row.unrealized_return_percent)}</b></td><td>{money(row.earliest_snapshot_value,analytics.display_currency)}</td><td>{money(row.latest_snapshot_value,analytics.display_currency)}</td><td>{pct(row.snapshot_value_change_percent)}</td></tr>})}</tbody></table></div></section>}</section>
   );
@@ -3298,6 +3343,7 @@ const databaseTransferCategories = [
   ["private-equity", "Private equity"],
   ["liabilities", "Liabilities"],
   ["planning-settings", "Planning & settings"],
+  ["portfolio-history", "Portfolio net-worth history"],
 ] as const;
 
 function DatabaseOperations({ onCleaned, onReset }: { onCleaned: (message: string) => Promise<void>; onReset: () => void }) {

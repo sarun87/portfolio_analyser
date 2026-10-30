@@ -78,7 +78,9 @@ from backend.app.services.models import (
     GoalsSummary,
     InsightFinding,
     Insights,
+    NetWorthSnapshotCapture,
     SnapshotComparison,
+    TimeSeriesPoint,
     SavedScenario,
     ScenarioAnalysis,
     ScenarioInput,
@@ -90,7 +92,7 @@ from backend.app.services.models import (
     FundDataSecurity, FundDataRefreshRequest, FundDataRefreshResult, MfapiSchemeCacheUpdate,
 )
 from backend.app.services.allocation_category_service import create_category, delete_category, list_categories
-from backend.app.services.portfolio_service import create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
+from backend.app.services.portfolio_service import capture_net_worth_snapshot, create_position, dashboard, delete_position_history, list_positions, profit_loss, update_position, update_positions
 from backend.app.services.price_service import refresh_all, refresh_security
 from backend.app.services.price_refresh_jobs import price_refresh_jobs
 from backend.app.services.fx_service import (
@@ -402,6 +404,15 @@ def pl() -> list[Position]:
 def analytics_dashboard() -> DashboardAnalytics:
     with get_connection() as conn:
         return analytics_cache.get("dashboard", database_manager.revision, lambda: dashboard(conn))
+
+
+@router.post("/analytics/net-worth-snapshots", response_model=TimeSeriesPoint)
+def record_net_worth_snapshot(payload: NetWorthSnapshotCapture) -> TimeSeriesPoint:
+    with get_connection() as conn:
+        try:
+            return capture_net_worth_snapshot(conn, payload.snapshot_date)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/report-branding", response_model=ReportBranding)

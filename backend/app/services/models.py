@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -396,6 +397,10 @@ class TimeSeriesPoint(BaseModel):
     value: float
 
 
+class NetWorthSnapshotCapture(BaseModel):
+    snapshot_date: date
+
+
 class CountryReturn(BaseModel):
     country: str
     current_market_value: float
@@ -421,6 +426,7 @@ class DashboardAnalytics(BaseModel):
     unrealized_gain_loss: float
     unrealized_gain_loss_pct: Optional[float]
     portfolio_growth: list[TimeSeriesPoint]
+    net_worth_growth: list[TimeSeriesPoint] = Field(default_factory=list)
     asset_allocation: list[AnalyticsPoint]
     broker_allocation: list[AnalyticsPoint]
     country_allocation: list[AnalyticsPoint]

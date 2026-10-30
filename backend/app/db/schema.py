@@ -526,7 +526,30 @@ def _mfapi_indian_mutual_funds(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "fund_refresh_status", "provider_identifier", "TEXT")
 
 
-MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data), (10, _yfinance_expense_ratio_unit), (11, _mfapi_indian_mutual_funds))
+def _portfolio_net_worth_snapshots(conn: sqlite3.Connection) -> None:
+    """Store explicit all-asset net-worth history with capture-time FX rates."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS portfolio_net_worth_snapshots (
+          snapshot_date TEXT PRIMARY KEY,
+          captured_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS portfolio_net_worth_snapshot_balances (
+          snapshot_date TEXT NOT NULL REFERENCES portfolio_net_worth_snapshots(snapshot_date) ON DELETE CASCADE,
+          currency TEXT NOT NULL,
+          net_amount REAL NOT NULL,
+          PRIMARY KEY (snapshot_date, currency)
+        );
+        CREATE TABLE IF NOT EXISTS portfolio_net_worth_snapshot_fx_rates (
+          snapshot_date TEXT NOT NULL REFERENCES portfolio_net_worth_snapshots(snapshot_date) ON DELETE CASCADE,
+          from_currency TEXT NOT NULL,
+          to_currency TEXT NOT NULL,
+          rate REAL NOT NULL CHECK (rate > 0),
+          PRIMARY KEY (snapshot_date, from_currency, to_currency)
+        );
+    """)
+
+
+MIGRATIONS = ((1, _baseline_schema), (2, _allocation_categories), (3, _composition_provenance), (4, _projection_planning), (5, _performance_indexes), (6, _lot_identity_index), (7, _report_branding), (8, _liabilities), (9, _yfinance_fund_data), (10, _yfinance_expense_ratio_unit), (11, _mfapi_indian_mutual_funds), (12, _portfolio_net_worth_snapshots))
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
