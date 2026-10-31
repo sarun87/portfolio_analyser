@@ -26,7 +26,7 @@ def test_category_migration_preserves_unversioned_data():
     conn.execute("DROP TABLE schema_migrations")
     init_db(conn)
     assert conn.execute("SELECT name FROM brokers").fetchone()["name"] == "Legacy broker"
-    assert [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert [row["version"] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 
 def test_category_delete_is_allowed_when_unused(sqlite_conn):

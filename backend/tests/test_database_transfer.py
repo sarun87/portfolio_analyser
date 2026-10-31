@@ -77,6 +77,27 @@ def test_bank_export_import_replaces_only_bank_accounts(tmp_path):
     assert rows == [("Bank Account", "Source bank", 100.0), ("Retirement Account", "Keep retirement", 2.0)]
 
 
+def test_portfolio_history_export_import_replaces_only_history(tmp_path):
+    source = _connection()
+    source.execute("INSERT INTO portfolio_net_worth_snapshots(snapshot_date, captured_at) VALUES ('2026-01-01', 'captured')")
+    source.execute("INSERT INTO portfolio_net_worth_snapshot_balances VALUES ('2026-01-01', 'USD', 123.0)")
+    source.execute("INSERT INTO portfolio_net_worth_snapshot_fx_rates VALUES ('2026-01-01', 'USD', 'USD', 1.0)")
+    _static(source, "Bank Account", "Source bank", 100)
+    export_path = tmp_path / "portfolio-history.db"
+    export_path.write_bytes(create_export(source, ["portfolio-history"]))
+
+    target = _connection()
+    target.execute("INSERT INTO portfolio_net_worth_snapshots(snapshot_date, captured_at) VALUES ('2025-12-31', 'old')")
+    target.execute("INSERT INTO portfolio_net_worth_snapshot_balances VALUES ('2025-12-31', 'USD', 7.0)")
+    _static(target, "Bank Account", "Keep bank", 8)
+
+    assert inspect_export(target, export_path) == ["portfolio-history"]
+    assert import_export(target, export_path, ["portfolio-history"]) == {"portfolio-history": 3}
+    assert [tuple(row) for row in target.execute("SELECT snapshot_date, captured_at FROM portfolio_net_worth_snapshots")] == [("2026-01-01", "captured")]
+    assert target.execute("SELECT net_amount FROM portfolio_net_worth_snapshot_balances").fetchone()[0] == 123
+    assert target.execute("SELECT entity_name FROM static_accounts").fetchone()[0] == "Keep bank"
+
+
 def test_incompatible_export_does_not_change_target(tmp_path):
     source = _connection()
     _static(source, "Bank Account", "Source bank", 100)

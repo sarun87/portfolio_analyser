@@ -165,6 +165,7 @@ export type DashboardAnalytics = {
   unrealized_gain_loss: number;
   unrealized_gain_loss_pct?: number | null;
   portfolio_growth: TimeSeriesPoint[];
+  net_worth_growth: TimeSeriesPoint[];
   asset_allocation: AnalyticsPoint[];
   broker_allocation: AnalyticsPoint[];
   country_allocation: AnalyticsPoint[];

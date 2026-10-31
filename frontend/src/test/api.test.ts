@@ -31,6 +31,15 @@ describe("cookie-authenticated API requests", () => {
     expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test");
   });
 
+  it("records a local-date net-worth snapshot using a protected request", async () => {
+    await api.captureNetWorthSnapshot("2026-10-29");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/analytics/net-worth-snapshots");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test");
+    expect(init.body).toBe(JSON.stringify({ snapshot_date: "2026-10-29" }));
+  });
+
   it("sends a protected password-change request", async () => {
     await api.changePassphrase("new password");
     const [url, init] = fetchMock.mock.calls[0];

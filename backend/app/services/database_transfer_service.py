@@ -20,7 +20,7 @@ from backend.app.db.schema import MIGRATIONS, init_db
 FORMAT_VERSION = 1
 CATEGORIES = (
     "brokerage", "broker-definitions", "bank-accounts", "retirement-accounts", "other-static-accounts",
-    "real-estate", "private-equity", "liabilities", "planning-settings",
+    "real-estate", "private-equity", "liabilities", "planning-settings", "portfolio-history",
 )
 
 BROKERAGE_TABLES = (
@@ -38,6 +38,11 @@ SINGLE_TABLE_CATEGORIES = {
     "real-estate": ("real_estate_assets",),
     "private-equity": ("private_equity_assets",),
     "liabilities": ("liabilities",),
+    "portfolio-history": (
+        "portfolio_net_worth_snapshots",
+        "portfolio_net_worth_snapshot_balances",
+        "portfolio_net_worth_snapshot_fx_rates",
+    ),
 }
 STATIC_CATEGORY_VALUES = {
     "bank-accounts": "Bank Account",
@@ -104,6 +109,10 @@ def clear_categories(conn: sqlite3.Connection, categories: Iterable[str]) -> Non
             _delete_planning(conn)
         elif category in STATIC_CATEGORY_VALUES:
             conn.execute("DELETE FROM static_accounts WHERE category = ?", (STATIC_CATEGORY_VALUES[category],))
+        elif category == "portfolio-history":
+            for table in reversed(SINGLE_TABLE_CATEGORIES[category]):
+                conn.execute(f"DELETE FROM {table}")
+                _reset_sequence(conn, table)
         else:
             for table in SINGLE_TABLE_CATEGORIES[category]:
                 conn.execute(f"DELETE FROM {table}")
@@ -398,6 +407,9 @@ def import_export(target: sqlite3.Connection, source_path: Path, categories: Ite
                     count += _copy_table(source, target, table)
             elif category in STATIC_CATEGORY_VALUES:
                 count += _copy_table(source, target, "static_accounts", "WHERE category = ?", (STATIC_CATEGORY_VALUES[category],), omit_id=True)
+            elif category == "portfolio-history":
+                for table in SINGLE_TABLE_CATEGORIES[category]:
+                    count += _copy_table(source, target, table)
             else:
                 for table in SINGLE_TABLE_CATEGORIES[category]:
                     count += _copy_table(source, target, table)

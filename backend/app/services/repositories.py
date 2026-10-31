@@ -284,4 +284,9 @@ def clean_portfolio_data(conn: sqlite3.Connection) -> None:
     clean_real_estate_data(conn)
     clean_private_equity_data(conn)
     clean_liability_data(conn)
+    _delete_tables(conn, [
+        "portfolio_net_worth_snapshot_fx_rates",
+        "portfolio_net_worth_snapshot_balances",
+        "portfolio_net_worth_snapshots",
+    ])
     _delete_tables(conn, ["portfolio_fees", "risk_settings", "fee_settings"])

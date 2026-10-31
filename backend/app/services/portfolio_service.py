@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from backend.app.services.import_service import derive_per_unit_and_total
 from backend.app.services.models import AnalyticsPoint, CountryReturn, DashboardAnalytics, Position, PositionCreate, PositionUpdate, TimeSeriesPoint
-from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, fx_rate_lookup, get_display_currency
+from backend.app.services.fx_service import SUPPORTED_CURRENCIES, convert_amount, fx_rate_lookup, get_display_currency, get_fx_rate
 from backend.app.services.repositories import (
     get_or_create_account, get_broker_by_name, get_or_create_security,
     insert_import, insert_position,
@@ -396,6 +396,93 @@ def profit_loss(conn: sqlite3.Connection) -> list[Position]:
     )
 
 
+def _net_worth_balances_by_currency(conn: sqlite3.Connection) -> dict[str, float]:
+    balances: dict[str, float] = {}
+
+    def add(currency: str, amount: float) -> None:
+        key = (currency or "USD").upper()
+        balances[key] = balances.get(key, 0.0) + float(amount or 0)
+
+    for position in list_positions(conn):
+        add(position.currency, position.total_fmv or 0)
+    for row in conn.execute("SELECT currency, SUM(amount) AS value FROM static_accounts GROUP BY currency"):
+        add(row["currency"], row["value"])
+    for row in conn.execute("SELECT currency, SUM(current_value) AS value FROM real_estate_assets GROUP BY currency"):
+        add(row["currency"], row["value"])
+    for row in conn.execute("SELECT currency, SUM(quantity * last_valuation_per_unit) AS value FROM private_equity_assets GROUP BY currency"):
+        add(row["currency"], row["value"])
+    for row in conn.execute("SELECT currency, SUM(outstanding_balance) AS value FROM liabilities GROUP BY currency"):
+        add(row["currency"], -(row["value"] or 0))
+    return balances
+
+
+def capture_net_worth_snapshot(conn: sqlite3.Connection, snapshot_date: date) -> TimeSeriesPoint:
+    """Capture one all-assets net-worth point for a user-selected local date."""
+    date_key = snapshot_date.isoformat()
+    conn.execute("SAVEPOINT capture_net_worth_snapshot")
+    try:
+        balances = _net_worth_balances_by_currency(conn)
+        targets = set(SUPPORTED_CURRENCIES) | set(balances)
+        rates = {
+            (source, target): get_fx_rate(conn, source, target)
+            for source in balances
+            for target in targets
+        }
+        captured_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO portfolio_net_worth_snapshots(snapshot_date, captured_at) VALUES (?, ?)
+               ON CONFLICT(snapshot_date) DO UPDATE SET captured_at = excluded.captured_at""",
+            (date_key, captured_at),
+        )
+        conn.execute("DELETE FROM portfolio_net_worth_snapshot_balances WHERE snapshot_date = ?", (date_key,))
+        conn.execute("DELETE FROM portfolio_net_worth_snapshot_fx_rates WHERE snapshot_date = ?", (date_key,))
+        conn.executemany(
+            "INSERT INTO portfolio_net_worth_snapshot_balances(snapshot_date, currency, net_amount) VALUES (?, ?, ?)",
+            [(date_key, currency, amount) for currency, amount in balances.items()],
+        )
+        conn.executemany(
+            "INSERT INTO portfolio_net_worth_snapshot_fx_rates(snapshot_date, from_currency, to_currency, rate) VALUES (?, ?, ?, ?)",
+            [(date_key, source, target, rate) for (source, target), rate in rates.items()],
+        )
+        display_currency = get_display_currency(conn)
+        value = sum(amount * rates[(currency, display_currency)] for currency, amount in balances.items())
+        conn.execute("RELEASE SAVEPOINT capture_net_worth_snapshot")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT capture_net_worth_snapshot")
+        conn.execute("RELEASE SAVEPOINT capture_net_worth_snapshot")
+        raise
+
+    return TimeSeriesPoint(date=date_key, value=value)
+
+
+def net_worth_snapshot_history(conn: sqlite3.Connection, display_currency: Optional[str] = None) -> list[TimeSeriesPoint]:
+    currency = (display_currency or get_display_currency(conn)).upper()
+    points: list[TimeSeriesPoint] = []
+    for snapshot in conn.execute("SELECT snapshot_date FROM portfolio_net_worth_snapshots ORDER BY snapshot_date"):
+        balances = conn.execute(
+            "SELECT currency, net_amount FROM portfolio_net_worth_snapshot_balances WHERE snapshot_date = ?",
+            (snapshot["snapshot_date"],),
+        ).fetchall()
+        rates = {
+            (row["from_currency"], row["to_currency"]): float(row["rate"])
+            for row in conn.execute(
+                "SELECT from_currency, to_currency, rate FROM portfolio_net_worth_snapshot_fx_rates WHERE snapshot_date = ?",
+                (snapshot["snapshot_date"],),
+            )
+        }
+        value = 0.0
+        for row in balances:
+            source = row["currency"].upper()
+            rate = 1.0 if source == currency else rates.get((source, currency))
+            if rate is None:
+                raise ValueError(
+                    f"Net-worth snapshot on {snapshot['snapshot_date']} is missing its captured {source}/{currency} FX rate."
+                )
+            value += float(row["net_amount"]) * rate
+        points.append(TimeSeriesPoint(date=snapshot["snapshot_date"], value=value))
+    return points
+
+
 def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
     display_currency = get_display_currency(conn)
     positions = list_positions(conn)
@@ -531,6 +618,7 @@ def dashboard(conn: sqlite3.Connection) -> DashboardAnalytics:
         unrealized_gain_loss=gain,
         unrealized_gain_loss_pct=pct,
         portfolio_growth=[TimeSeriesPoint(date=date, value=value) for date, value in sorted(growth_totals.items())],
+        net_worth_growth=net_worth_snapshot_history(conn, display_currency),
         asset_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(asset_totals.items())],
         broker_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(broker_totals.items())],
         country_allocation=[AnalyticsPoint(label=label, value=value) for label, value in sorted(country_totals.items())],
